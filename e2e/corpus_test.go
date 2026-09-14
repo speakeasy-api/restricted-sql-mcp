@@ -56,6 +56,21 @@ var bypassCorpusClickHouse = []string{
 	"SELECT * FROM allowed_orders FORMAT JSON",
 	"SELECT * FROM allowed_orders INTO OUTFILE '/tmp/x'",
 	"SELECT sleep(3)",
+	// A table name in the set position of IN is resolved as a table by
+	// ClickHouse, whether written qualified, bare, parenthesised, or nested.
+	"SELECT id IN (forbidden_secrets) FROM allowed_orders",
+	"SELECT id IN (app.forbidden_secrets) FROM allowed_orders",
+	"SELECT id IN ((app.forbidden_secrets)) FROM allowed_orders",
+	"SELECT id GLOBAL IN (forbidden_secrets) FROM allowed_orders",
+	"SELECT id NOT IN (app.forbidden_secrets) FROM allowed_orders",
+	// The function-call spellings of IN are the same leak.
+	"SELECT in(id, forbidden_secrets) FROM allowed_orders",
+	"SELECT in(id, app.forbidden_secrets) FROM allowed_orders",
+	"SELECT globalIn(id, app.forbidden_secrets) FROM allowed_orders",
+	"SELECT notIn(id, forbidden_secrets) FROM allowed_orders",
+	// The same, hidden inside a lambda body.
+	"SELECT arrayFilter(x -> x IN (forbidden_secrets), [1])",
+	"SELECT arrayFilter(x -> (x, 'y') IN (app.forbidden_secrets), [1])",
 }
 
 // bypassCorpusWritePostgres must be rejected in write mode on Postgres when
