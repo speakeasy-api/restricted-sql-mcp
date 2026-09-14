@@ -36,12 +36,16 @@ import (
 // version is overridden at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
-// shutdownGrace bounds HTTP shutdown after SIGINT/SIGTERM.
+// shutdownGrace bounds draining HTTP after SIGINT/SIGTERM.
 const shutdownGrace = 10 * time.Second
 
 // bootProvisionTimeout bounds the boot-time provisioning attempt; a failure
 // is retried by /readyz and by tool calls, never fatal.
 const bootProvisionTimeout = 10 * time.Second
+
+// backendCloseTimeout bounds closing the pool at shutdown; connections stuck
+// on an unresponsive database are abandoned to the exiting process.
+const backendCloseTimeout = 2 * time.Second
 
 func main() {
 	cfg, err := config.ParseFlags(os.Args[1:], os.Getenv, version)
@@ -77,11 +81,7 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err := backend.Close(); err != nil {
-			logger.Warn("backend close failed", "error", err.Error())
-		}
-	}()
+	defer closeBackend(backend, logger)
 
 	var registry *txn.Registry
 	if pol.WritesEnabled {
@@ -140,7 +140,7 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 		runner, err = tunnel.New(tunnel.Config{
 			GatewayURL:     cfg.TunnelGatewayURL,
 			APIKey:         cfg.TunnelKey,
-			LocalMCPURL:    "http://" + cfg.Listen + "/mcp",
+			LocalMCPURL:    localMCPURL(cfg.Listen),
 			ServiceVersion: cfg.TunnelServiceVersion,
 			Metadata: map[string]string{
 				"dialect":     string(pol.Dialect),
@@ -187,11 +187,12 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 
 	select {
 	case <-ctx.Done():
-		logger.Info("shutdown signal received")
+		logger.Info("shutdown signal received", "grace", shutdownGrace.String())
 	case err := <-errCh:
 		logger.Error("component failed; shutting down", "error", err.Error())
-		stop()
 	}
+	// A second signal must end the process even if shutdown stalls.
+	stop()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
@@ -199,6 +200,35 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 	}
 	logger.Info("http listener stopped")
 	return nil
+}
+
+// closeBackend closes the pool, giving up after backendCloseTimeout.
+func closeBackend(backend db.Backend, logger *slog.Logger) {
+	done := make(chan error, 1)
+	go func() { done <- backend.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			logger.Warn("backend close failed", "error", err.Error())
+		}
+	case <-time.After(backendCloseTimeout):
+		logger.Warn("backend close did not finish in time; exiting anyway", "waited", backendCloseTimeout.String())
+	}
+}
+
+// localMCPURL is the URL the tunnel agent proxies to. A listener bound to
+// an unspecified address (0.0.0.0, ::, or no host) is reached on loopback.
+func localMCPURL(listen string) string {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "http://" + listen + "/mcp"
+	}
+	if host == "" {
+		host = "127.0.0.1"
+	} else if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/mcp"
 }
 
 // selectDialect picks the guard and backend for the configured dialect. With
@@ -211,11 +241,11 @@ func selectDialect(ctx context.Context, cfg *config.Config, pol *policy.Policy, 
 		if cfg.ConnectionLevelSecurity {
 			prov := &dbsec.PostgresProvisioner{DSN: cfg.DSN, Policy: pol, Prefix: cfg.SecurityRolePrefix, Logger: logger}
 			build := func(ctx context.Context, creds dbsec.Creds) (db.Backend, error) {
-				return pgbackend.NewWithWriteDSN(ctx, creds.ReadDSN, creds.WriteDSN, pol, logger)
+				return pgbackend.NewWithWriteDSN(ctx, creds.ReadDSN, creds.WriteDSN, pol, logger, pgbackend.WithMaxOpenTxns(cfg.MaxOpenTxns))
 			}
 			return dbsec.NewGate(policy.Postgres, prov, build, logger), guard, nil
 		}
-		backend, err := pgbackend.New(ctx, cfg.DSN, pol, logger)
+		backend, err := pgbackend.New(ctx, cfg.DSN, pol, logger, pgbackend.WithMaxOpenTxns(cfg.MaxOpenTxns))
 		if err != nil {
 			return nil, nil, err
 		}
