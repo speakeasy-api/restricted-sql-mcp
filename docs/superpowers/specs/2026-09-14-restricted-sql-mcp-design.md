@@ -189,8 +189,8 @@ Rules applied by the guard:
    array_agg, string_agg, bool_and, bool_or, …`), window functions (`row_number,
    rank, dense_rank, lag, lead, first_value, last_value, ntile`), scalar string,
    math, date/time, JSON accessors, `coalesce, nullif, greatest, least`, and their
-   ClickHouse equivalents (`toDate, toStartOfDay, toString, arrayJoin`? — no:
-   `arrayJoin` is allowed only in SELECT lists, `uniq, quantile, groupArray, …`).
+   ClickHouse equivalents (`toDate, toStartOfDay, toString, uniq, quantile,
+   groupArray, …`). `arrayJoin` is allowed. A rejected function is named in the error.
    Not allowed (examples): `pg_sleep`, `pg_read_file`, `lo_*`, `dblink*`,
    `pg_terminate_backend`, `set_config`, `current_setting`, `query_to_xml`,
    `pg_advisory_lock`, `nextval/setval`, any `pg_*`/`hypopg_*` function, ClickHouse
@@ -249,7 +249,7 @@ EXPLAIN SELECT * FROM allowed_orders
 SET search_path = other
 SHOW search_path
 SELECT 'x'::regclass
-SELECT * FROM allowed_orders TABLESAMPLE SYSTEM (1) -- allowed? no: reject in v1
+SELECT * FROM allowed_orders TABLESAMPLE SYSTEM (1) -- rejected in v1 (no TABLESAMPLE)
 SELECT * FROM allowed_orders /* comment */ ; --
 SELECT * FROM system.tables                        -- clickhouse
 SELECT * FROM url('http://x','CSV')                -- clickhouse
