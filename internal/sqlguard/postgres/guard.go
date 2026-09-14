@@ -102,7 +102,7 @@ func check(raw string, mode sqlguard.Mode, pol *policy.Policy) (*sqlguard.Checke
 		return nil, sqlguard.Reject("empty statement", "")
 	}
 
-	v := &visitCtx{mode: mode, pol: pol, tables: map[policy.TableRef]struct{}{}}
+	v := newVisitCtx(mode, pol)
 	kind, err := v.walkTop(stmt)
 	if err != nil {
 		return nil, err

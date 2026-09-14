@@ -47,6 +47,11 @@ var bypassCorpusPostgres = []string{
 	"SELECT 1\x00; SELECT * FROM forbidden_secrets",
 	"SELECT pg_typeof(1)",
 	"SELECT txid_current()",
+	"SELECT o.pg_typeof FROM allowed_orders o",
+	"SELECT o.leak_via_row FROM allowed_orders o",
+	"SELECT (o).to_json FROM allowed_orders o",
+	"SELECT x.pg_typeof FROM (SELECT 1 AS a) x",
+	"SELECT (ROW(1, 2)).pg_typeof",
 }
 
 // bypassCorpusClickHouse must be rejected in read mode on ClickHouse.
@@ -74,6 +79,9 @@ var bypassCorpusWritePostgres = []string{
 	"INSERT INTO allowed_audit (note) VALUES ('x'); DELETE FROM allowed_audit",
 	"TRUNCATE allowed_audit",
 	"SELECT * FROM forbidden_secrets",
+	"INSERT INTO allowed_audit (note) SELECT o.leak_via_row FROM allowed_orders o",
+	"UPDATE allowed_audit a SET note = a.to_json::text",
+	"DELETE FROM allowed_audit RETURNING allowed_audit.record_out",
 }
 
 // positiveCorpusCommon must be accepted in read mode by both dialects with the

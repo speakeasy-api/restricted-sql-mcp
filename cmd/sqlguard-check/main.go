@@ -22,6 +22,7 @@ func main() {
 	readTables := fs.String("read-tables", "", "comma-separated read allowlist")
 	writeTables := fs.String("write-tables", "", "comma-separated write allowlist")
 	modeFlag := fs.String("mode", "read", "read|write")
+	columns := fs.String("columns", "", "catalog columns as table=col1,col2;table2=col1 (postgres qualified column resolution)")
 	verbose := fs.Bool("v", false, "debug logging to stderr")
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "usage: sqlguard-check [flags] <sql>\n")
@@ -60,6 +61,11 @@ func main() {
 		fatal(err)
 	}
 	pol.WritesEnabled = len(pol.WriteTables) > 0
+	cols, err := parseColumns(*columns, *defaultSchema, d)
+	if err != nil {
+		fatal(err)
+	}
+	pol.SetColumns(cols)
 
 	mode := sqlguard.ModeRead
 	switch *modeFlag {
@@ -104,6 +110,29 @@ func fill(set map[policy.TableRef]struct{}, list, defaultSchema string, d policy
 		set[ref] = struct{}{}
 	}
 	return nil
+}
+
+func parseColumns(spec, defaultSchema string, d policy.Dialect) (map[policy.TableRef][]string, error) {
+	out := map[policy.TableRef][]string{}
+	for _, entry := range strings.Split(spec, ";") {
+		if strings.TrimSpace(entry) == "" {
+			continue
+		}
+		table, list, ok := strings.Cut(entry, "=")
+		if !ok {
+			return nil, fmt.Errorf("--columns entry %q must be table=col1,col2", entry)
+		}
+		ref, err := policy.ParseTableRef(table, defaultSchema, d)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range strings.Split(list, ",") {
+			if c = strings.TrimSpace(c); c != "" {
+				out[ref] = append(out[ref], c)
+			}
+		}
+	}
+	return out, nil
 }
 
 func fatal(err error) {

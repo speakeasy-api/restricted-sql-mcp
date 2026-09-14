@@ -71,8 +71,51 @@ func New(ctx context.Context, dsn string, pol *policy.Policy, logger *slog.Logge
 		logger.Warn("postgres unreachable at boot; readiness will retry", "error", err.Error())
 	} else {
 		logger.Debug("postgres reachable at boot", "max_conns", cfg.MaxConns)
+		if err := b.RefreshColumns(pingCtx); err != nil {
+			logger.Warn("could not load catalog columns at boot; readiness will retry", "error", err.Error())
+		}
 	}
 	return b, nil
+}
+
+// RefreshColumns loads the ordered column names of every allowlisted relation
+// into the policy. Relations that do not exist are simply absent from the
+// snapshot, so qualified references to them fail closed in the guard.
+func (b *Backend) RefreshColumns(ctx context.Context) error {
+	refs := b.pol.AllTables()
+	schemas := make([]string, len(refs))
+	names := make([]string, len(refs))
+	for i, r := range refs {
+		schemas[i], names[i] = r.Schema, r.Name
+	}
+	const q = `
+SELECT n.nspname, c.relname, a.attname
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN unnest($1::text[], $2::text[]) AS want(s, t) ON want.s = n.nspname AND want.t = c.relname
+JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+WHERE c.relkind IN ('r', 'v', 'm', 'p', 'f')
+ORDER BY n.nspname, c.relname, a.attnum`
+	rows, err := b.pool.Query(ctx, q, schemas, names)
+	if err != nil {
+		return fmt.Errorf("load columns: %w", err)
+	}
+	defer rows.Close()
+	cols := map[policy.TableRef][]string{}
+	for rows.Next() {
+		var s, t, col string
+		if err := rows.Scan(&s, &t, &col); err != nil {
+			return fmt.Errorf("load columns: %w", err)
+		}
+		ref := policy.TableRef{Schema: s, Name: t}
+		cols[ref] = append(cols[ref], col)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("load columns: %w", err)
+	}
+	b.pol.SetColumns(cols)
+	b.log.Debug("catalog columns loaded", "relations", len(cols), "wanted", len(refs))
+	return nil
 }
 
 func (b *Backend) Dialect() policy.Dialect { return policy.Postgres }

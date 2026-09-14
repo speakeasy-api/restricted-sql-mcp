@@ -107,6 +107,14 @@ type Backend interface {
 	Close() error
 }
 
+// ColumnLoader is implemented by backends that can refresh the policy's
+// catalog column snapshot from the database.
+type ColumnLoader interface {
+	// RefreshColumns reloads the column names of every allowlisted relation
+	// into the policy.
+	RefreshColumns(ctx context.Context) error
+}
+
 // Tx is one open write transaction pinned to a dedicated connection.
 type Tx interface {
 	// Exec runs canonical SQL inside the transaction. For statements that
