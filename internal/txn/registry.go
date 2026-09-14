@@ -229,7 +229,9 @@ func (r *Registry) reap() {
 	}
 }
 
-// Close rolls back every open transaction. Calls in flight are waited for.
+// Close rolls back every open transaction, in parallel so an unresponsive
+// database costs closeTimeout once rather than per transaction. Calls in
+// flight are waited for.
 func (r *Registry) Close() {
 	r.mu.Lock()
 	snapshot := make(map[string]*entry, len(r.entries))
@@ -237,16 +239,23 @@ func (r *Registry) Close() {
 		snapshot[id] = e
 	}
 	r.mu.Unlock()
+	var wg sync.WaitGroup
 	for id, e := range snapshot {
-		e.mu.Lock()
-		if !e.closed {
+		wg.Add(1)
+		go func(id string, e *entry) {
+			defer wg.Done()
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			if e.closed {
+				return
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+			defer cancel()
 			err := r.finish(ctx, id, e, "rollback")
-			cancel()
 			r.logger.Info("txn.closed", "transaction_id", id, "error", errString(err))
-		}
-		e.mu.Unlock()
+		}(id, e)
 	}
+	wg.Wait()
 }
 
 // Open reports the number of open transactions.

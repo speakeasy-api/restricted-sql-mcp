@@ -35,8 +35,12 @@ import (
 // version is overridden at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
-// shutdownGrace bounds HTTP shutdown after SIGINT/SIGTERM.
+// shutdownGrace bounds draining HTTP after SIGINT/SIGTERM.
 const shutdownGrace = 10 * time.Second
+
+// backendCloseTimeout bounds closing the pool at shutdown; connections stuck
+// on an unresponsive database are abandoned to the exiting process.
+const backendCloseTimeout = 2 * time.Second
 
 func main() {
 	cfg, err := config.ParseFlags(os.Args[1:], os.Getenv, version)
@@ -72,11 +76,7 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err := backend.Close(); err != nil {
-			logger.Warn("backend close failed", "error", err.Error())
-		}
-	}()
+	defer closeBackend(backend, logger)
 
 	var registry *txn.Registry
 	if pol.WritesEnabled {
@@ -174,11 +174,12 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 
 	select {
 	case <-ctx.Done():
-		logger.Info("shutdown signal received")
+		logger.Info("shutdown signal received", "grace", shutdownGrace.String())
 	case err := <-errCh:
 		logger.Error("component failed; shutting down", "error", err.Error())
-		stop()
 	}
+	// A second signal must end the process even if shutdown stalls.
+	stop()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
@@ -186,6 +187,20 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 	}
 	logger.Info("http listener stopped")
 	return nil
+}
+
+// closeBackend closes the pool, giving up after backendCloseTimeout.
+func closeBackend(backend db.Backend, logger *slog.Logger) {
+	done := make(chan error, 1)
+	go func() { done <- backend.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			logger.Warn("backend close failed", "error", err.Error())
+		}
+	case <-time.After(backendCloseTimeout):
+		logger.Warn("backend close did not finish in time; exiting anyway", "waited", backendCloseTimeout.String())
+	}
 }
 
 // selectDialect picks the guard and backend for the configured dialect.
