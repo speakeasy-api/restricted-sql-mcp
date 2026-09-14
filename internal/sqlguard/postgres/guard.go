@@ -18,6 +18,11 @@ import (
 
 const logSQLLimit = 2000
 
+// maxStatementBytes bounds the raw input. libpg_query's deparser is
+// superlinear in statement size (256 KiB takes seconds), so oversized input is
+// refused before it is parsed.
+const maxStatementBytes = 64 << 10
+
 type guard struct {
 	log *slog.Logger
 }
@@ -38,6 +43,11 @@ func (g guard) Check(raw string, mode sqlguard.Mode, pol *policy.Policy) (*sqlgu
 	log := g.log.With("mode", mode.String())
 	log.Debug("guard.check", "raw_sql", truncate(raw))
 
+	if len(raw) > maxStatementBytes {
+		err := sqlguard.Reject("statement is too long", fmt.Sprintf("%d bytes, limit %d", len(raw), maxStatementBytes))
+		log.Debug("guard.rejected", "reason", err.Error(), "duration", time.Since(start))
+		return nil, err
+	}
 	checked, err := check(raw, mode, pol)
 	if err != nil {
 		if rej, ok := err.(*sqlguard.RejectError); ok {
@@ -67,6 +77,11 @@ func (g guard) Check(raw string, mode sqlguard.Mode, pol *policy.Policy) (*sqlgu
 func check(raw string, mode sqlguard.Mode, pol *policy.Policy) (*sqlguard.Checked, error) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, sqlguard.Reject("empty statement", "")
+	}
+	// The C parser stops at the first NUL, so everything after it would be
+	// silently dropped from what gets validated and executed.
+	if strings.IndexByte(raw, 0) >= 0 {
+		return nil, sqlguard.Reject("statement contains a NUL byte", "")
 	}
 	tree, err := pg_query.Parse(raw)
 	if err != nil {
