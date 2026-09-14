@@ -189,7 +189,6 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 }
 
 // selectDialect picks the guard and backend for the configured dialect.
-// selectDialect wires the guard and backend for the configured dialect.
 func selectDialect(ctx context.Context, cfg *config.Config, pol *policy.Policy, logger *slog.Logger) (db.Backend, sqlguard.Guard, error) {
 	switch pol.Dialect {
 	case policy.Postgres:
