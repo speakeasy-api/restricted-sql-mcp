@@ -94,14 +94,19 @@ func (t *tx) Rollback(ctx context.Context) error {
 
 // finish ends the transaction with COMMIT or ROLLBACK and always releases
 // the connection. A failed COMMIT is followed by a ROLLBACK so the connection
-// goes back to the pool clean.
+// goes back to the pool clean. The caller's cancellation is ignored, since an
+// interrupted COMMIT has an unknown outcome; resetTimeout bounds it instead.
 func (t *tx) finish(ctx context.Context, verb string) error {
 	t.done = true
 	defer t.conn.Release()
-	if ctx.Err() != nil {
-		ctx = context.WithoutCancel(ctx)
+	if t.conn.Conn().IsClosed() {
+		// Postgres discards the transaction when the connection drops.
+		if verb == "COMMIT" {
+			return errors.New("commit: connection was lost; the transaction was rolled back by the server")
+		}
+		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, resetTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), resetTimeout)
 	defer cancel()
 	tag, err := t.conn.Exec(ctx, verb)
 	if err != nil && verb == "COMMIT" {
