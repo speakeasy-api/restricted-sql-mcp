@@ -207,7 +207,7 @@ func TestPostgresReadAdversarial(t *testing.T) {
 		"SELECT date_trunc('day', created_at), extract(year FROM created_at), created_at AT TIME ZONE 'UTC', now() - interval '1 day' FROM allowed_orders",
 		"SELECT sum(amount) OVER w FROM allowed_orders WINDOW w AS (PARTITION BY customer_id ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)",
 		`SELECT "id" FROM "public"."allowed_orders" AS "O"`,
-		"SELECT (row_to_json(o)).id, json_build_object('id', id)->>'id' FROM allowed_orders o",
+		"SELECT (o).id, row_to_json(o), json_build_object('id', id)->>'id' FROM allowed_orders o",
 		"SELECT * FROM (VALUES (1, 'a'), (2, 'b')) AS v(id, name)",
 		"SELECT 1 WHERE 1 IS DISTINCT FROM 2 AND true IS TRUE",
 	}

@@ -103,13 +103,18 @@ func (t *tx) finish(ctx context.Context, verb string) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, resetTimeout)
 	defer cancel()
-	_, err := t.conn.Exec(ctx, verb)
+	tag, err := t.conn.Exec(ctx, verb)
 	if err != nil && verb == "COMMIT" {
 		_, _ = t.conn.Exec(ctx, "ROLLBACK")
 		return fmt.Errorf("commit: %w", err)
 	}
 	if err != nil {
 		return fmt.Errorf("%s: %w", verb, err)
+	}
+	// Postgres answers COMMIT on an aborted transaction with a ROLLBACK tag
+	// and no error; report that as a failure instead of a silent no-op.
+	if verb == "COMMIT" && tag.String() == "ROLLBACK" {
+		return errors.New("commit: transaction was aborted by an earlier error and has been rolled back")
 	}
 	return nil
 }

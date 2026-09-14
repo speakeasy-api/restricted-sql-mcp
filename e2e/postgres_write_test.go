@@ -156,7 +156,7 @@ func TestPostgresWriteAbortedTransaction(t *testing.T) {
 	id := beginTx(t, s)
 	s.mustReject(t, "execute_sql_write", map[string]any{"transaction_id": id, "sql": "INSERT INTO allowed_audit (id, note) VALUES (NULL, 'x')"}, "not-null")
 	s.mustReject(t, "execute_sql_write", map[string]any{"transaction_id": id, "sql": "SELECT 1"}, "current transaction is aborted")
-	s.mustReject(t, "commit_transaction", map[string]any{"transaction_id": id}, "")
+	s.mustReject(t, "commit_transaction", map[string]any{"transaction_id": id}, "aborted")
 	s.mustReject(t, "execute_sql_write", map[string]any{"transaction_id": id, "sql": "SELECT 1"}, "unknown or expired")
 
 	id2 := beginTx(t, s)
@@ -168,9 +168,10 @@ func TestPostgresWriteAbortedTransaction(t *testing.T) {
 
 func TestPostgresWriteUnknownTransaction(t *testing.T) {
 	s := writeServer(t)
-	for _, tool := range []string{"execute_sql_write", "commit_transaction", "rollback_transaction"} {
-		s.mustReject(t, tool, map[string]any{"transaction_id": "00000000000000000000000000000000", "sql": "SELECT 1"}, "unknown or expired")
-	}
+	bogus := "00000000000000000000000000000000"
+	s.mustReject(t, "execute_sql_write", map[string]any{"transaction_id": bogus, "sql": "SELECT 1"}, "unknown or expired")
+	s.mustReject(t, "commit_transaction", map[string]any{"transaction_id": bogus}, "unknown or expired")
+	s.mustReject(t, "rollback_transaction", map[string]any{"transaction_id": bogus}, "unknown or expired")
 	s.mustReject(t, "execute_sql_write", map[string]any{"transaction_id": "", "sql": "SELECT 1"}, "transaction_id")
 }
 
