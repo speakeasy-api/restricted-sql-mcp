@@ -74,21 +74,20 @@ clickhouse), `ReadRejectsWriteVerbs`, `ReadStatementTimeout`,
 - `gofmt -l .` clean, `go vet ./...` clean, `go mod tidy` clean with only the
   planned direct dependencies (parser, clickhouse-go, go-sdk after the stream C
   merge).
-- All 20 `-run ClickHouse` e2e tests (my 16 + stream C's 4 smoke tests) pass
-  against the real binary and MCP client, using a temporary local wiring of
-  `cmd/restrictedsql-mcp/main.go` (chguard + chbackend + mcpserver + minimal
-  /healthz,/readyz). That wiring was not committed.
+- All 20 `-run ClickHouse` e2e tests (my 16 + stream C's 4 smoke tests) and
+  the 2 `-run Common` tests pass against the real binary and MCP client with
+  stream C's boot wiring (C5) merged and the clickhouse branch of
+  `selectDialect` in `cmd/restrictedsql-mcp/main.go` wired to `chguard.New()`
+  and `chbackend.New(ctx, cfg.DSN, pol, logger)`. Only that branch was changed;
+  the postgres branch still uses the stubs until stream A merges.
 
 ## Unrun / pending
 
-- The e2e suites have not been run against stream C's final `main.go`: at the
-  time of writing `origin/stream-c-server` has C1–C4 (config, harness, txn
-  registry, mcpserver + stubs) but not C5 (health, tunnel, boot wiring), so there
-  is no dialect switch to add the clickhouse branch to. Once C5 lands, wire
-  `chguard.New()` and `chbackend.New(ctx, cfg.DSN, pol, logger)` into the
-  clickhouse case and run `make e2e-ch`; the tests are expected to pass unchanged
-  given the run above.
-- `go test ./...` without `E2E=1` skips everything (by design).
+- Nothing in stream B is unrun. `go test ./...` without `E2E=1` skips the e2e
+  package by design.
+- `origin/stream-c-server` was merged into this branch twice (after C4 and after
+  C5); `go.mod`/`go.sum` conflicts were resolved by taking the union of direct
+  dependencies and running `go mod tidy`.
 
 ## Contract deviations
 
