@@ -56,7 +56,8 @@ type ServerOpts struct {
 	WriteTables []string
 	Writes      bool // adds --dangerously-add-write-tools
 	ExtraArgs   []string
-	ExpectReady *bool // nil → wait for 200 on /readyz; false → wait for 503
+	Env         []string // extra KEY=VALUE pairs for the process environment
+	ExpectReady *bool    // nil → wait for 200 on /readyz; false → wait for 503
 	// AnyReadiness accepts whatever /readyz answers; use it for tests that
 	// only need the MCP endpoint (tool listing) and not a live database.
 	AnyReadiness bool
@@ -68,6 +69,8 @@ type Server struct {
 	Session *mcp.ClientSession
 	Logs    *syncBuffer
 	cmd     *exec.Cmd
+	exited  chan struct{} // closed once the process has been waited for
+	waitErr error
 }
 
 // syncBuffer is a bytes.Buffer safe for concurrent writes from the
@@ -166,16 +169,21 @@ func bootServer(t *testing.T, o ServerOpts) *Server {
 	cmd := exec.Command(binaryPath, o.args(listen)...)
 	cmd.Stdout = logs
 	cmd.Stderr = logs
+	cmd.Env = append(os.Environ(), o.Env...)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start server: %v", err)
 	}
-	s := &Server{URL: "http://" + listen, Logs: logs, cmd: cmd}
+	s := &Server{URL: "http://" + listen, Logs: logs, cmd: cmd, exited: make(chan struct{})}
+	go func() {
+		s.waitErr = cmd.Wait()
+		close(s.exited)
+	}()
 	t.Cleanup(func() {
 		if s.Session != nil {
 			_ = s.Session.Close()
 		}
 		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		<-s.exited
 		if t.Failed() {
 			t.Logf("server logs (%s):\n%s", strings.Join(cmd.Args[1:], " "), logs.String())
 		}
@@ -191,7 +199,12 @@ func bootServer(t *testing.T, o ServerOpts) *Server {
 		if status == want || (o.AnyReadiness && status != 0) {
 			break
 		}
-		if cmd.ProcessState != nil || time.Now().After(deadline) {
+		select {
+		case <-s.exited:
+			t.Fatalf("server exited before reaching /readyz=%d (last %d %q)\nlogs:\n%s", want, status, body, logs.String())
+		default:
+		}
+		if time.Now().After(deadline) {
 			t.Fatalf("server did not reach /readyz=%d within 30s (last %d %q)\nlogs:\n%s", want, status, body, logs.String())
 		}
 		time.Sleep(100 * time.Millisecond)
