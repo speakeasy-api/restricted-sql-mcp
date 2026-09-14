@@ -192,7 +192,7 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 func selectDialect(ctx context.Context, cfg *config.Config, pol *policy.Policy, logger *slog.Logger) (db.Backend, sqlguard.Guard, error) {
 	switch pol.Dialect {
 	case policy.Postgres:
-		backend, err := pgbackend.New(ctx, cfg.DSN, pol, logger)
+		backend, err := pgbackend.New(ctx, cfg.DSN, pol, logger, pgbackend.WithMaxOpenTxns(cfg.MaxOpenTxns))
 		if err != nil {
 			return nil, nil, err
 		}

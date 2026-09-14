@@ -26,6 +26,7 @@ import (
 
 const (
 	minPoolConns     = 16
+	readReserveConns = 8
 	defaultMaxRows   = 1000
 	bootPingTimeout  = 3 * time.Second
 	resetTimeout     = 5 * time.Second
@@ -45,19 +46,42 @@ type Backend struct {
 	log  *slog.Logger
 }
 
+// Option tunes the backend at construction.
+type Option func(*options)
+
+type options struct {
+	maxOpenTxns int
+}
+
+// WithMaxOpenTxns sizes the pool so that this many pinned write
+// transactions still leave connections for reads and readiness probes.
+func WithMaxOpenTxns(n int) Option {
+	return func(o *options) { o.maxOpenTxns = n }
+}
+
 // New parses the DSN and creates the pool without requiring the database to
 // be reachable; connectivity is reported by Ping (and therefore /readyz).
-func New(ctx context.Context, dsn string, pol *policy.Policy, logger *slog.Logger) (*Backend, error) {
+func New(ctx context.Context, dsn string, pol *policy.Policy, logger *slog.Logger, opts ...Option) (*Backend, error) {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	var o options
+	for _, opt := range opts {
+		opt(&o)
 	}
 	logger = logger.With("backend", "postgres")
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("invalid postgres DSN: %w", err)
 	}
-	if cfg.MaxConns < minPoolConns {
-		cfg.MaxConns = minPoolConns
+	// Write transactions pin a connection each; keep a reserve above the
+	// cap so they can never starve reads or /readyz.
+	floor := int32(minPoolConns)
+	if n := int32(o.maxOpenTxns + readReserveConns); n > floor {
+		floor = n
+	}
+	if cfg.MaxConns < floor {
+		cfg.MaxConns = floor
 	}
 	cfg.MinConns = 0
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
