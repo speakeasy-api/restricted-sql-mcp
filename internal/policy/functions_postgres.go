@@ -45,8 +45,9 @@ var postgresFunctions = setOf(
 	"array_length", "cardinality", "array_position", "array_positions", "array_remove",
 	"array_replace", "array_append", "array_prepend", "array_cat", "array_to_string",
 	"string_to_array", "unnest", "array_upper", "array_lower", "array_ndims", "array_dims",
-	// type/misc
-	"gen_random_uuid", "uuid_generate_v4", "txid_current", "pg_typeof",
+	// misc; no pg_* function is allowed (pg_typeof leaks type names,
+	// txid_current assigns a transaction id even in a read-only transaction)
+	"gen_random_uuid", "uuid_generate_v4",
 )
 
 // postgresCastTypes are the builtin type names allowed as cast targets.

@@ -43,3 +43,9 @@ INSERT INTO allowed_orders (id, customer_id, amount, status, created_at) VALUES
     (5, 3, 42.00,  'paid',      '2026-01-05T10:00:00Z');
 
 INSERT INTO forbidden_secrets (id, secret) VALUES (1, 'hunter2');
+
+-- A function taking the row type of an allowlisted table: reachable through
+-- functional column notation (o.leak_via_row) unless the guard resolves
+-- qualified column references itself.
+CREATE FUNCTION leak_via_row(allowed_orders) RETURNS text LANGUAGE sql STABLE
+AS $$ SELECT secret FROM forbidden_secrets LIMIT 1 $$;

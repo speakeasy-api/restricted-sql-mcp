@@ -5,6 +5,7 @@ package policy
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -103,7 +104,9 @@ func splitIdent(s string) ([]identPart, error) {
 	return parts, nil
 }
 
-// Policy is the immutable boot-time configuration the guards enforce.
+// Policy is the boot-time configuration the guards enforce. Everything is
+// immutable except the catalog column snapshot, which the backend refreshes
+// from the database (see SetColumns).
 type Policy struct {
 	Dialect          Dialect
 	DefaultSchema    string
@@ -112,6 +115,31 @@ type Policy struct {
 	WritesEnabled    bool
 	MaxRows          int
 	StatementTimeout time.Duration
+
+	columns atomic.Pointer[map[TableRef][]string]
+}
+
+// SetColumns replaces the catalog column snapshot: the ordered column names of
+// each allowlisted relation. Guards use it to resolve qualified column
+// references, so a relation missing from the snapshot has no resolvable
+// columns (fail closed).
+func (p *Policy) SetColumns(cols map[TableRef][]string) {
+	copied := make(map[TableRef][]string, len(cols))
+	for ref, names := range cols {
+		copied[ref] = append([]string(nil), names...)
+	}
+	p.columns.Store(&copied)
+}
+
+// Columns returns the ordered column names of t from the current snapshot, or
+// false when t is unknown or no snapshot has been loaded.
+func (p *Policy) Columns(t TableRef) ([]string, bool) {
+	m := p.columns.Load()
+	if m == nil {
+		return nil, false
+	}
+	names, ok := (*m)[t]
+	return names, ok
 }
 
 // CanRead reports whether t may be read by the read-only tool (t ∈ R).

@@ -92,6 +92,19 @@ func (g *Gate) backend(ctx context.Context) (db.Backend, error) {
 
 func (g *Gate) Dialect() policy.Dialect { return g.dialect }
 
+// RefreshColumns forwards to the provisioned backend so /readyz keeps the
+// policy's catalog column snapshot fresh when the gate is in front of it.
+func (g *Gate) RefreshColumns(ctx context.Context) error {
+	b, err := g.backend(ctx)
+	if err != nil {
+		return err
+	}
+	if loader, ok := b.(db.ColumnLoader); ok {
+		return loader.RefreshColumns(ctx)
+	}
+	return nil
+}
+
 func (g *Gate) Ping(ctx context.Context) error {
 	b, err := g.backend(ctx)
 	if err != nil {

@@ -23,21 +23,19 @@ type visitCtx struct {
 	mode   sqlguard.Mode
 	pol    *policy.Policy
 	tables map[policy.TableRef]struct{}
-	// cteScopes is a stack of CTE names introduced by enclosing WITH clauses.
-	// An unqualified relation name that matches one is a local relation.
-	cteScopes []map[string]struct{}
+	// cteScopes is a stack of CTE names (with their output columns)
+	// introduced by enclosing WITH clauses. An unqualified relation name that
+	// matches one is a local relation.
+	cteScopes []map[string]colset
+	// relScopes is a stack of the relations visible to qualified column
+	// references, one entry per query level.
+	relScopes []*relScope
+	// outCache memoizes inferred output columns per SELECT node.
+	outCache map[*pg_query.SelectStmt]colset
 }
 
-func (v *visitCtx) pushScope()      { v.cteScopes = append(v.cteScopes, map[string]struct{}{}) }
-func (v *visitCtx) popScope()       { v.cteScopes = v.cteScopes[:len(v.cteScopes)-1] }
-func (v *visitCtx) addCTE(n string) { v.cteScopes[len(v.cteScopes)-1][n] = struct{}{} }
-func (v *visitCtx) cteInScope(n string) bool {
-	for i := len(v.cteScopes) - 1; i >= 0; i-- {
-		if _, ok := v.cteScopes[i][n]; ok {
-			return true
-		}
-	}
-	return false
+func newVisitCtx(mode sqlguard.Mode, pol *policy.Policy) *visitCtx {
+	return &visitCtx{mode: mode, pol: pol, tables: map[policy.TableRef]struct{}{}, outCache: map[*pg_query.SelectStmt]colset{}}
 }
 
 // allowedOperators is the set of builtin operator spellings accepted in
@@ -146,7 +144,7 @@ func (v *visitCtx) walk(n *pg_query.Node) error {
 	case *pg_query.Node_ResTarget:
 		return v.walkResTarget(x.ResTarget)
 	case *pg_query.Node_ColumnRef:
-		return v.walkAll(x.ColumnRef.Fields)
+		return v.walkColumnRef(x.ColumnRef)
 	case *pg_query.Node_AStar:
 		return nil
 	case *pg_query.Node_AConst:
@@ -203,10 +201,7 @@ func (v *visitCtx) walk(n *pg_query.Node) error {
 	case *pg_query.Node_AArrayExpr:
 		return v.walkAll(x.AArrayExpr.Elements)
 	case *pg_query.Node_AIndirection:
-		if err := v.walk(x.AIndirection.Arg); err != nil {
-			return err
-		}
-		return v.walkAll(x.AIndirection.Indirection)
+		return v.walkIndirection(x.AIndirection)
 	case *pg_query.Node_AIndices:
 		if err := v.walk(x.AIndices.Lidx); err != nil {
 			return err
@@ -318,11 +313,16 @@ func (v *visitCtx) walkSelect(s *pg_query.SelectStmt) error {
 		return sqlguard.Reject("FOR UPDATE/SHARE is not allowed", "LockingClause")
 	}
 	if s.WithClause != nil {
-		v.pushScope()
-		defer v.popScope()
+		v.pushCTEScope()
+		defer v.popCTEScope()
 		if err := v.walkWith(s.WithClause); err != nil {
 			return err
 		}
+	}
+	scope := v.pushRelScope()
+	defer v.popRelScope()
+	for _, f := range s.FromClause {
+		v.addFromItems(scope, f)
 	}
 	if err := v.walkAll(s.DistinctClause); err != nil {
 		return err
@@ -363,29 +363,26 @@ func (v *visitCtx) walkSelect(s *pg_query.SelectStmt) error {
 	return v.walkSelect(s.Rarg)
 }
 
-// walkWith validates the CTEs of a WITH clause. The caller has pushed a
+// walkWith validates the CTEs of a WITH clause. The caller has pushed a CTE
 // scope. Non-recursive CTE names become visible only to later CTEs and the
-// main query, as in Postgres; RECURSIVE makes every name visible everywhere.
+// main query, as in Postgres; RECURSIVE makes every name visible everywhere,
+// so their column sets are registered up front.
 func (v *visitCtx) walkWith(w *pg_query.WithClause) error {
-	if w.Recursive {
-		for _, n := range w.Ctes {
-			cte, ok := n.Node.(*pg_query.Node_CommonTableExpr)
-			if !ok {
-				return unsupported(n)
-			}
-			v.addCTE(cte.CommonTableExpr.Ctename)
-		}
-	}
 	for _, n := range w.Ctes {
-		cte, ok := n.Node.(*pg_query.Node_CommonTableExpr)
-		if !ok {
+		if _, ok := n.Node.(*pg_query.Node_CommonTableExpr); !ok {
 			return unsupported(n)
 		}
-		if err := v.walkCTE(cte.CommonTableExpr); err != nil {
+	}
+	if w.Recursive {
+		v.analyzeWith(w)
+	}
+	for _, n := range w.Ctes {
+		cte := n.Node.(*pg_query.Node_CommonTableExpr).CommonTableExpr
+		if err := v.walkCTE(cte); err != nil {
 			return err
 		}
 		if !w.Recursive {
-			v.addCTE(cte.CommonTableExpr.Ctename)
+			v.addCTE(cte.Ctename, v.cteCols(cte))
 		}
 	}
 	return nil
@@ -440,7 +437,7 @@ func (v *visitCtx) walkRangeVar(rv *pg_query.RangeVar, role relRole) error {
 	}
 	// An unqualified name that matches an enclosing CTE is a local relation.
 	// Mutation targets are always real tables in Postgres, never CTEs.
-	if rv.Schemaname == "" && role == roleSource && v.cteInScope(rv.Relname) {
+	if _, ok := v.cteInScope(rv.Relname); ok && rv.Schemaname == "" && role == roleSource {
 		return nil
 	}
 	ref := policy.TableRef{Schema: rv.Schemaname, Name: rv.Relname}
@@ -682,8 +679,8 @@ func (v *visitCtx) walkTypeName(t *pg_query.TypeName) error {
 
 func (v *visitCtx) walkInsert(s *pg_query.InsertStmt) error {
 	if s.WithClause != nil {
-		v.pushScope()
-		defer v.popScope()
+		v.pushCTEScope()
+		defer v.popCTEScope()
 		if err := v.walkWith(s.WithClause); err != nil {
 			return err
 		}
@@ -694,6 +691,10 @@ func (v *visitCtx) walkInsert(s *pg_query.InsertStmt) error {
 	if err := v.walkRangeVar(s.Relation, roleMutationTarget); err != nil {
 		return err
 	}
+	scope := v.pushRelScope()
+	defer v.popRelScope()
+	target := v.baseTableItem(s.Relation)
+	scope.items = append(scope.items, target, relItem{name: "excluded", aliased: true, cols: target.cols})
 	if err := v.walkAll(s.Cols); err != nil {
 		return err
 	}
@@ -746,8 +747,8 @@ func (v *visitCtx) walkIndexElem(e *pg_query.IndexElem) error {
 
 func (v *visitCtx) walkUpdate(s *pg_query.UpdateStmt) error {
 	if s.WithClause != nil {
-		v.pushScope()
-		defer v.popScope()
+		v.pushCTEScope()
+		defer v.popCTEScope()
 		if err := v.walkWith(s.WithClause); err != nil {
 			return err
 		}
@@ -757,6 +758,12 @@ func (v *visitCtx) walkUpdate(s *pg_query.UpdateStmt) error {
 	}
 	if err := v.walkRangeVar(s.Relation, roleMutationTarget); err != nil {
 		return err
+	}
+	scope := v.pushRelScope()
+	defer v.popRelScope()
+	scope.items = append(scope.items, v.baseTableItem(s.Relation))
+	for _, f := range s.FromClause {
+		v.addFromItems(scope, f)
 	}
 	if err := v.walkAll(s.TargetList); err != nil {
 		return err
@@ -772,8 +779,8 @@ func (v *visitCtx) walkUpdate(s *pg_query.UpdateStmt) error {
 
 func (v *visitCtx) walkDelete(s *pg_query.DeleteStmt) error {
 	if s.WithClause != nil {
-		v.pushScope()
-		defer v.popScope()
+		v.pushCTEScope()
+		defer v.popCTEScope()
 		if err := v.walkWith(s.WithClause); err != nil {
 			return err
 		}
@@ -783,6 +790,12 @@ func (v *visitCtx) walkDelete(s *pg_query.DeleteStmt) error {
 	}
 	if err := v.walkRangeVar(s.Relation, roleMutationTarget); err != nil {
 		return err
+	}
+	scope := v.pushRelScope()
+	defer v.popRelScope()
+	scope.items = append(scope.items, v.baseTableItem(s.Relation))
+	for _, u := range s.UsingClause {
+		v.addFromItems(scope, u)
 	}
 	if err := v.walkAll(s.UsingClause); err != nil {
 		return err

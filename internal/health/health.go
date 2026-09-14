@@ -85,6 +85,13 @@ func (c *Checker) evaluate(ctx context.Context) string {
 	if len(c.tables) == 0 {
 		return ""
 	}
+	// Each probe also refreshes the column snapshot so a database that was
+	// unreachable at boot, or a schema change, is picked up without a restart.
+	if loader, ok := c.backend.(db.ColumnLoader); ok {
+		if err := loader.RefreshColumns(ctx); err != nil {
+			return "column load failed: " + err.Error()
+		}
+	}
 	missing, err := c.backend.TablesExist(ctx, c.tables)
 	if err != nil {
 		return "table check failed: " + err.Error()
