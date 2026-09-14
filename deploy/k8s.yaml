@@ -1,0 +1,102 @@
+# Example deployment. There is no Service or Ingress on purpose: the only
+# ingress is the gram tunnel agent, which dials out to the gateway.
+#
+# Probes use httpGet against the pod's own port. The server listens on
+# 127.0.0.1 by default so nothing else in the cluster can reach it; kubelet
+# probes reach loopback in most CNIs. If yours cannot, change --listen to
+# 0.0.0.0:8080 and add a NetworkPolicy that denies all ingress to the pod.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: restrictedsql-mcp
+type: Opaque
+stringData:
+  DATABASE_URL: postgres://readonly_role:change-me@db.example.internal:5432/app?sslmode=require
+  TUNNEL_GATEWAY_URL: wss://gateway.example.com/tunnel
+  TUNNEL_KEY: change-me
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: restrictedsql-mcp
+  labels:
+    app: restrictedsql-mcp
+spec:
+  # Write transactions are process-local; keep a single replica.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: restrictedsql-mcp
+  template:
+    metadata:
+      labels:
+        app: restrictedsql-mcp
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: restrictedsql-mcp
+          image: ghcr.io/example/restrictedsql-mcp:v0.1.0
+          args:
+            - --dialect=postgres
+            - --read-tables=public.allowed_orders,public.allowed_customers
+            - --listen=127.0.0.1:8080
+            - --statement-timeout=30s
+            - --max-rows=1000
+            - --log-level=info
+            - --tunnel
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: restrictedsql-mcp
+                  key: DATABASE_URL
+            - name: TUNNEL_GATEWAY_URL
+              valueFrom:
+                secretKeyRef:
+                  name: restrictedsql-mcp
+                  key: TUNNEL_GATEWAY_URL
+            - name: TUNNEL_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: restrictedsql-mcp
+                  key: TUNNEL_KEY
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            periodSeconds: 10
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 24
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
