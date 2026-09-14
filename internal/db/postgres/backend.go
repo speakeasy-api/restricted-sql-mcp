@@ -321,8 +321,11 @@ func isUndefinedFunction(err error, name string) bool {
 func collectRows(rows pgx.Rows, tm *pgtype.Map, maxRows int) (*db.Result, error) {
 	defer rows.Close()
 	res := &db.Result{Rows: [][]any{}}
-	for _, fd := range rows.FieldDescriptions() {
+	fds := rows.FieldDescriptions()
+	arrayCols := make([]bool, len(fds))
+	for i, fd := range fds {
 		res.Columns = append(res.Columns, db.Column{Name: fd.Name, Type: typeName(tm, fd.DataTypeOID)})
+		arrayCols[i] = isArrayType(tm, fd.DataTypeOID)
 	}
 	if res.Columns == nil {
 		res.Columns = []db.Column{}
@@ -336,8 +339,16 @@ func collectRows(rows pgx.Rows, tm *pgtype.Map, maxRows int) (*db.Result, error)
 		if err != nil {
 			return nil, err
 		}
+		raw := rows.RawValues()
 		row := make([]any, len(vals))
 		for i, v := range vals {
+			if arrayCols[i] && raw[i] != nil {
+				// pgx decodes every array into a flat []any; rebuild the
+				// dimensions so a 2-D array arrives as nested arrays.
+				if nested, err := decodeArray(tm, fds[i], raw[i]); err == nil {
+					v = nested
+				}
+			}
 			row[i] = convertValue(v)
 		}
 		res.Rows = append(res.Rows, row)
@@ -348,6 +359,51 @@ func collectRows(rows pgx.Rows, tm *pgtype.Map, maxRows int) (*db.Result, error)
 	}
 	res.RowsAffected = rows.CommandTag().RowsAffected()
 	return res, nil
+}
+
+func isArrayType(tm *pgtype.Map, oid uint32) bool {
+	if tm == nil {
+		return false
+	}
+	t, ok := tm.TypeForOID(oid)
+	if !ok {
+		return false
+	}
+	_, isArray := t.Codec.(*pgtype.ArrayCodec)
+	return isArray
+}
+
+// decodeArray scans an array column keeping its dimensions.
+func decodeArray(tm *pgtype.Map, fd pgconn.FieldDescription, src []byte) (any, error) {
+	var arr pgtype.Array[any]
+	if err := tm.Scan(fd.DataTypeOID, fd.Format, src, &arr); err != nil {
+		return nil, err
+	}
+	if !arr.Valid {
+		return nil, nil
+	}
+	if len(arr.Dims) <= 1 {
+		if arr.Elements == nil {
+			return []any{}, nil
+		}
+		return arr.Elements, nil
+	}
+	rest := arr.Elements
+	return nestArray(arr.Dims, &rest), nil
+}
+
+func nestArray(dims []pgtype.ArrayDimension, rest *[]any) []any {
+	n := int(dims[0].Length)
+	out := make([]any, 0, n)
+	if len(dims) == 1 {
+		out = append(out, (*rest)[:n]...)
+		*rest = (*rest)[n:]
+		return out
+	}
+	for i := 0; i < n; i++ {
+		out = append(out, nestArray(dims[1:], rest))
+	}
+	return out
 }
 
 func typeName(tm *pgtype.Map, oid uint32) string {
