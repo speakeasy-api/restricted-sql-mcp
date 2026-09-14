@@ -20,11 +20,13 @@ import (
 
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/config"
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/db"
+	pgbackend "github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/db/postgres"
 	dbstub "github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/db/stub"
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/health"
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/mcpserver"
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/policy"
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/sqlguard"
+	pgguard "github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/sqlguard/postgres"
 	guardstub "github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/sqlguard/stub"
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/tunnel"
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/txn"
@@ -191,9 +193,11 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 func selectDialect(ctx context.Context, cfg *config.Config, pol *policy.Policy, logger *slog.Logger) (db.Backend, sqlguard.Guard, error) {
 	switch pol.Dialect {
 	case policy.Postgres:
-		// postgres: replace stub with pgguard.New() and pgbackend.New(ctx, cfg.DSN, pol, logger)
-		logger.Warn("postgres guard and backend are stubs; every statement is rejected and /readyz stays 503")
-		return dbstub.New(policy.Postgres), guardstub.New(), nil
+		backend, err := pgbackend.New(ctx, cfg.DSN, pol, logger)
+		if err != nil {
+			return nil, nil, err
+		}
+		return backend, pgguard.NewWithLogger(logger), nil
 	case policy.ClickHouse:
 		// clickhouse: replace stub with chguard.New() and chbackend.New(ctx, cfg.DSN, pol, logger)
 		logger.Warn("clickhouse guard and backend are stubs; every statement is rejected and /readyz stays 503")

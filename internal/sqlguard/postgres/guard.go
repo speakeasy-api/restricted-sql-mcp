@@ -18,14 +18,24 @@ import (
 
 const logSQLLimit = 2000
 
-type guard struct{}
+type guard struct {
+	log *slog.Logger
+}
 
-// New returns the Postgres guard.
-func New() sqlguard.Guard { return guard{} }
+// New returns the Postgres guard logging through slog.Default().
+func New() sqlguard.Guard { return NewWithLogger(nil) }
 
-func (guard) Check(raw string, mode sqlguard.Mode, pol *policy.Policy) (*sqlguard.Checked, error) {
+// NewWithLogger returns the Postgres guard logging through the given logger.
+func NewWithLogger(logger *slog.Logger) sqlguard.Guard {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return guard{log: logger.With("guard", "postgres")}
+}
+
+func (g guard) Check(raw string, mode sqlguard.Mode, pol *policy.Policy) (*sqlguard.Checked, error) {
 	start := time.Now()
-	log := slog.Default().With("guard", "postgres", "mode", mode.String())
+	log := g.log.With("mode", mode.String())
 	log.Debug("guard.check", "raw_sql", truncate(raw))
 
 	checked, err := check(raw, mode, pol)
