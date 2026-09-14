@@ -45,7 +45,9 @@ backend implements `db.TxBackend`, otherwise the write tools return
   credentials in this environment). State is derived from the agent's own log
   messages ("tunnel agent connected" → connected; "session ended" /
   "reconnecting" → connecting) because the agent exposes no state API.
-- `deploy/k8s.yaml` was not applied to a cluster.
+- `deploy/k8s.yaml` was not applied to a cluster. `docker build -f deploy/Dockerfile`
+  succeeds (116 MB image) and `docker run --rm restrictedsql-mcp:dev --help`
+  prints the usage.
 
 ## Decisions and deviations from the plan
 
@@ -97,9 +99,9 @@ No others.
 
 ## Open issues
 
-- GitHub over SSH was intermittently unreachable during this session; pushes
-  were retried until they went through. Confirm `origin/stream-c-server` has the
-  C6 commit.
+- GitHub over SSH and Docker Hub were intermittently unreachable during this
+  session; pushes and the image build were retried until they went through.
+  `origin/stream-c-server` holds every task commit.
 - The corpus keeps the spec's `SELECT * FROM allowed_orders /* comment */ ; --`
   as a bypass entry; stream A's guard must reject the trailing `;` (e.g. via
   `stmt_len`/multiple-statement detection) or move it to the positive corpus
