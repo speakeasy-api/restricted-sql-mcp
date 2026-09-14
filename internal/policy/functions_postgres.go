@@ -21,6 +21,8 @@ var postgresFunctions = setOf(
 	"translate", "starts_with", "regexp_replace", "regexp_match", "regexp_matches",
 	"regexp_split_to_array", "md5", "to_char", "to_number", "format", "quote_literal",
 	"encode", "decode", "ascii", "chr",
+	// internal names the parser emits for SIMILAR TO / LIKE ... ESCAPE
+	"similar_to_escape", "like_escape",
 	// math
 	"abs", "ceil", "ceiling", "floor", "round", "trunc", "sign", "sqrt", "cbrt", "power", "exp",
 	"ln", "log", "log10", "mod", "div", "pi", "random", "width_bucket", "degrees", "radians",
