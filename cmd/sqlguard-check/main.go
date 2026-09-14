@@ -11,6 +11,7 @@ import (
 
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/policy"
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/sqlguard"
+	chguard "github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/sqlguard/clickhouse"
 	pgguard "github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/sqlguard/postgres"
 )
 
@@ -73,6 +74,8 @@ func main() {
 	switch d {
 	case policy.Postgres:
 		g = pgguard.New()
+	case policy.ClickHouse:
+		g = chguard.New()
 	default:
 		fatal(fmt.Errorf("unsupported dialect %q", *dialect))
 	}

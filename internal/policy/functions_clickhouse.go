@@ -65,6 +65,7 @@ var clickhouseFunctions = setOf(
 	"bitshiftright", "cityhash64", "siphash64", "xxhash64", "halfmd5", "isnan", "isinfinite",
 	"isfinite", "least", "greatest", "and", "or", "not", "xor", "equals", "notequals", "less",
 	"greater", "lessorequals", "greaterorequals", "in", "notin", "globalin", "globalnotin",
+	"exists",
 )
 
 // clickhouseCastTypes are the builtin type names allowed as cast targets.
@@ -74,4 +75,7 @@ var clickhouseCastTypes = setOf(
 	"decimal128", "decimal256", "bool", "boolean", "string", "fixedstring", "date", "date32",
 	"datetime", "datetime64", "uuid", "ipv4", "ipv6", "nullable", "array", "tuple", "map",
 	"lowcardinality", "json",
+	// SQL-standard aliases ClickHouse accepts for the builtin types above
+	"int", "integer", "bigint", "smallint", "tinyint", "float", "double", "real", "numeric",
+	"dec", "varchar", "char", "text", "timestamp",
 )

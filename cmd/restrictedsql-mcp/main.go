@@ -20,14 +20,14 @@ import (
 
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/config"
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/db"
+	chbackend "github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/db/clickhouse"
 	pgbackend "github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/db/postgres"
-	dbstub "github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/db/stub"
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/health"
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/mcpserver"
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/policy"
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/sqlguard"
+	chguard "github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/sqlguard/clickhouse"
 	pgguard "github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/sqlguard/postgres"
-	guardstub "github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/sqlguard/stub"
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/tunnel"
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/txn"
 )
@@ -189,7 +189,7 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 }
 
 // selectDialect picks the guard and backend for the configured dialect.
-// Streams A and B replace the stub branches with their implementations.
+// selectDialect wires the guard and backend for the configured dialect.
 func selectDialect(ctx context.Context, cfg *config.Config, pol *policy.Policy, logger *slog.Logger) (db.Backend, sqlguard.Guard, error) {
 	switch pol.Dialect {
 	case policy.Postgres:
@@ -199,9 +199,11 @@ func selectDialect(ctx context.Context, cfg *config.Config, pol *policy.Policy, 
 		}
 		return backend, pgguard.NewWithLogger(logger), nil
 	case policy.ClickHouse:
-		// clickhouse: replace stub with chguard.New() and chbackend.New(ctx, cfg.DSN, pol, logger)
-		logger.Warn("clickhouse guard and backend are stubs; every statement is rejected and /readyz stays 503")
-		return dbstub.New(policy.ClickHouse), guardstub.New(), nil
+		backend, err := chbackend.New(ctx, cfg.DSN, pol, logger)
+		if err != nil {
+			return nil, nil, err
+		}
+		return backend, chguard.New(), nil
 	default:
 		return nil, nil, fmt.Errorf("unsupported dialect %q", pol.Dialect)
 	}
