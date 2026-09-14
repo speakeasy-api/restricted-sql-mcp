@@ -57,6 +57,9 @@ type ServerOpts struct {
 	Writes      bool // adds --dangerously-add-write-tools
 	ExtraArgs   []string
 	ExpectReady *bool // nil → wait for 200 on /readyz; false → wait for 503
+	// AnyReadiness accepts whatever /readyz answers; use it for tests that
+	// only need the MCP endpoint (tool listing) and not a live database.
+	AnyReadiness bool
 }
 
 // Server is a running binary with a connected MCP client session.
@@ -185,7 +188,7 @@ func bootServer(t *testing.T, o ServerOpts) *Server {
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		status, body := tryGet(s.URL + "/readyz")
-		if status == want {
+		if status == want || (o.AnyReadiness && status != 0) {
 			break
 		}
 		if cmd.ProcessState != nil || time.Now().After(deadline) {
