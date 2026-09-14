@@ -50,9 +50,6 @@ func (c colset) override(colnames []*pg_query.Node) colset {
 	return out
 }
 
-// systemColumns exist on every heap relation and never invoke a function.
-var systemColumns = []string{"tableoid", "ctid", "xmin", "cmin", "xmax", "cmax"}
-
 // relItem is one relation visible to qualified column references: a FROM
 // entry, a data-modifying statement's target, or INSERT's "excluded".
 type relItem struct {
@@ -132,7 +129,7 @@ func (v *visitCtx) baseTableItem(rv *pg_query.RangeVar) relItem {
 	}
 	cols := colset{}
 	if names, ok := v.pol.Columns(ref); ok {
-		cols = colset{known: true, names: append(append([]string(nil), names...), systemColumns...)}
+		cols = colset{known: true, names: append([]string(nil), names...)}
 	}
 	it := relItem{name: rv.Relname, schema: ref.Schema, rel: ref.Name}
 	if rv.Alias != nil {
@@ -183,6 +180,7 @@ func (v *visitCtx) addFromItems(scope *relScope, n *pg_query.Node) {
 		j := x.JoinExpr
 		start := len(scope.items)
 		v.addFromItems(scope, j.Larg)
+		mid := len(scope.items)
 		v.addFromItems(scope, j.Rarg)
 		if j.JoinUsingAlias != nil {
 			using := colset{known: true}
@@ -192,17 +190,51 @@ func (v *visitCtx) addFromItems(scope *relScope, n *pg_query.Node) {
 			scope.items = append(scope.items, relItem{name: j.JoinUsingAlias.Aliasname, aliased: true, cols: using})
 		}
 		if j.Alias != nil {
-			merged := colset{known: true}
-			for _, it := range scope.items[start:] {
-				if !it.cols.known {
-					merged = colset{}
-					break
-				}
-				merged.names = append(merged.names, it.cols.names...)
-			}
+			merged := joinColumns(j, mergeItems(scope.items[start:mid]), mergeItems(scope.items[mid:]))
 			scope.items = append(scope.items[:start], relItem{name: j.Alias.Aliasname, aliased: true, cols: merged.override(j.Alias.Colnames)})
 		}
 	}
+}
+
+func mergeItems(items []relItem) colset {
+	out := colset{known: true}
+	for _, it := range items {
+		if !it.cols.known {
+			return colset{}
+		}
+		out.names = append(out.names, it.cols.names...)
+	}
+	return out
+}
+
+// joinColumns orders a join's output the way Postgres does: the USING (or
+// NATURAL) columns first, then the remaining left and right columns.
+func joinColumns(j *pg_query.JoinExpr, left, right colset) colset {
+	if !left.known || !right.known {
+		return colset{}
+	}
+	var using []string
+	switch {
+	case j.IsNatural:
+		for _, l := range left.names {
+			if right.has(l) {
+				using = append(using, l)
+			}
+		}
+	case len(j.UsingClause) > 0:
+		using = stringFields(j.UsingClause)
+	default:
+		return colset{known: true, names: append(append([]string(nil), left.names...), right.names...)}
+	}
+	merged := colset{known: true, names: append([]string(nil), using...)}
+	for _, side := range []colset{left, right} {
+		for _, n := range side.names {
+			if !merged.has(n) {
+				merged.names = append(merged.names, n)
+			}
+		}
+	}
+	return merged
 }
 
 // outputCols infers the output column names of a SELECT the way Postgres
@@ -249,8 +281,8 @@ func (v *visitCtx) computeOutputCols(s *pg_query.SelectStmt) colset {
 
 // analyzeWith registers the column sets of a WITH clause's CTEs in the
 // current CTE scope without validating them. RECURSIVE makes every name
-// visible everywhere, so those are computed in two passes to let forward
-// references settle.
+// visible everywhere; a forward reference resolves to an unknown column set,
+// so qualified references to such a CTE are rejected.
 func (v *visitCtx) analyzeWith(w *pg_query.WithClause) {
 	if w.Recursive {
 		for _, n := range w.Ctes {
@@ -258,28 +290,12 @@ func (v *visitCtx) analyzeWith(w *pg_query.WithClause) {
 				v.addCTE(cte.CommonTableExpr.Ctename, colset{})
 			}
 		}
-		for pass := 0; pass < 2; pass++ {
-			for _, n := range w.Ctes {
-				if cte, ok := n.Node.(*pg_query.Node_CommonTableExpr); ok {
-					delete(v.outCache, cteSelect(cte.CommonTableExpr))
-					v.addCTE(cte.CommonTableExpr.Ctename, v.cteCols(cte.CommonTableExpr))
-				}
-			}
-		}
-		return
 	}
 	for _, n := range w.Ctes {
 		if cte, ok := n.Node.(*pg_query.Node_CommonTableExpr); ok {
 			v.addCTE(cte.CommonTableExpr.Ctename, v.cteCols(cte.CommonTableExpr))
 		}
 	}
-}
-
-func cteSelect(c *pg_query.CommonTableExpr) *pg_query.SelectStmt {
-	if sel, ok := c.Ctequery.GetNode().(*pg_query.Node_SelectStmt); ok {
-		return sel.SelectStmt
-	}
-	return nil
 }
 
 // cteCols infers a CTE's output columns: the body's output for a SELECT, the

@@ -78,6 +78,9 @@ func TestPostgresColumnNotation(t *testing.T) {
 		"SELECT allowed_orders.id FROM allowed_orders o":                                    "does not name a relation",
 		"SELECT app.public.allowed_orders.id FROM allowed_orders":                           "catalog-qualified",
 		"SELECT o.nope FROM allowed_orders o":                                               "o.nope",
+		"SELECT o.ctid FROM allowed_orders o":                                               "o.ctid",
+		"SELECT j.id FROM (allowed_orders o JOIN allowed_customers c USING (id)) AS j(x)":   "j.id",
+		"WITH RECURSIVE a AS (SELECT * FROM b), b AS (SELECT 1 AS x) SELECT a.x FROM a":     "not known",
 	}
 	for sql, want := range rejected {
 		t.Run(sql, func(t *testing.T) {
@@ -86,7 +89,6 @@ func TestPostgresColumnNotation(t *testing.T) {
 	}
 	accepted := []string{
 		"SELECT allowed_orders.id, public.allowed_orders.amount FROM public.allowed_orders",
-		"SELECT o.tableoid, o.ctid, o.xmin FROM allowed_orders o",
 		"SELECT sub.amount FROM (SELECT id, amount FROM allowed_orders) sub WHERE sub.amount > 10",
 		"SELECT sub.amount, sub.name FROM (SELECT * FROM allowed_orders o JOIN allowed_customers c ON c.id = o.customer_id) sub",
 		"SELECT sub.customer_id FROM (SELECT o.* FROM allowed_orders o) sub",
@@ -94,7 +96,9 @@ func TestPostgresColumnNotation(t *testing.T) {
 		"SELECT paid.status FROM (SELECT status FROM allowed_orders WHERE status = 'paid' UNION SELECT status FROM allowed_orders) paid",
 		"WITH paid(a, b) AS (SELECT id, amount FROM allowed_orders) SELECT paid.a, p.b FROM paid, paid p",
 		"WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT t.n + 1 FROM t WHERE t.n < 5) SELECT t.n FROM t",
-		"WITH RECURSIVE a AS (SELECT * FROM b), b AS (SELECT 1 AS x) SELECT a.x FROM a",
+		"WITH RECURSIVE b AS (SELECT 1 AS x), a AS (SELECT * FROM b) SELECT a.x FROM a",
+		"SELECT j.id, j.name, j.email FROM (allowed_orders o JOIN allowed_customers c USING (id)) AS j(id, cid, amount, status, created_at, name, email)",
+		"SELECT n.customer_id FROM (allowed_orders NATURAL JOIN allowed_customers) n",
 		"SELECT o.id, (SELECT c.name FROM allowed_customers c WHERE c.id = o.customer_id) FROM allowed_orders o",
 		"SELECT o.id, l.dbl FROM allowed_orders o CROSS JOIN LATERAL (SELECT o.amount * 2 AS dbl) l",
 		"SELECT j.id, j.name FROM (allowed_orders o JOIN allowed_customers c USING (id)) j",
