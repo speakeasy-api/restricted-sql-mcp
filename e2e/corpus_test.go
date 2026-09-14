@@ -44,6 +44,9 @@ var bypassCorpusPostgres = []string{
 	"SELECT 'x'::regclass",
 	"SELECT * FROM allowed_orders TABLESAMPLE SYSTEM (1)",
 	"SELECT $1",
+	"SELECT 1\x00; SELECT * FROM forbidden_secrets",
+	"SELECT pg_typeof(1)",
+	"SELECT txid_current()",
 }
 
 // bypassCorpusClickHouse must be rejected in read mode on ClickHouse.
