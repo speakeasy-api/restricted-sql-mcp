@@ -115,21 +115,21 @@ func TestPostgresReadyzFalseWhenDBUnreachable(t *testing.T) {
 }
 
 func TestPostgresToolListWithoutWriteFlag(t *testing.T) {
-	s := bootServer(t, ServerOpts{Dialect: "postgres"})
+	s := bootServer(t, ServerOpts{Dialect: "postgres", AnyReadiness: true})
 	if got := s.toolNames(t); !reflect.DeepEqual(got, readToolNames) {
 		t.Fatalf("tools = %v, want %v", got, readToolNames)
 	}
 }
 
 func TestPostgresToolListWithWriteFlag(t *testing.T) {
-	s := bootServer(t, ServerOpts{Dialect: "postgres", WriteTables: []string{"allowed_audit"}, Writes: true})
+	s := bootServer(t, ServerOpts{Dialect: "postgres", WriteTables: []string{"allowed_audit"}, Writes: true, AnyReadiness: true})
 	if got := s.toolNames(t); !reflect.DeepEqual(got, allToolNames()) {
 		t.Fatalf("tools = %v, want %v", got, allToolNames())
 	}
 }
 
 func TestClickHouseToolList(t *testing.T) {
-	s := bootServer(t, ServerOpts{Dialect: "clickhouse"})
+	s := bootServer(t, ServerOpts{Dialect: "clickhouse", AnyReadiness: true})
 	if got := s.toolNames(t); !reflect.DeepEqual(got, readToolNames) {
 		t.Fatalf("tools = %v, want %v", got, readToolNames)
 	}
