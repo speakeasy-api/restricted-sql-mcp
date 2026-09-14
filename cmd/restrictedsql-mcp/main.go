@@ -127,7 +127,7 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 		runner, err = tunnel.New(tunnel.Config{
 			GatewayURL:     cfg.TunnelGatewayURL,
 			APIKey:         cfg.TunnelKey,
-			LocalMCPURL:    "http://" + cfg.Listen + "/mcp",
+			LocalMCPURL:    localMCPURL(cfg.Listen),
 			ServiceVersion: cfg.TunnelServiceVersion,
 			Metadata: map[string]string{
 				"dialect":     string(pol.Dialect),
@@ -201,6 +201,21 @@ func closeBackend(backend db.Backend, logger *slog.Logger) {
 	case <-time.After(backendCloseTimeout):
 		logger.Warn("backend close did not finish in time; exiting anyway", "waited", backendCloseTimeout.String())
 	}
+}
+
+// localMCPURL is the URL the tunnel agent proxies to. A listener bound to
+// an unspecified address (0.0.0.0, ::, or no host) is reached on loopback.
+func localMCPURL(listen string) string {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "http://" + listen + "/mcp"
+	}
+	if host == "" {
+		host = "127.0.0.1"
+	} else if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/mcp"
 }
 
 // selectDialect picks the guard and backend for the configured dialect.
