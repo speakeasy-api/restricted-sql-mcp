@@ -65,8 +65,20 @@ func (c *Checker) Readyz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, body)
 }
 
+// provisioned is implemented by backends that must set something up on the
+// database before they can serve (connection-level security). The probe
+// retries it until it succeeds and reports its error verbatim.
+type provisioned interface {
+	EnsureProvisioned(ctx context.Context) error
+}
+
 // evaluate returns an empty string when ready, else the reason.
 func (c *Checker) evaluate(ctx context.Context) string {
+	if p, ok := c.backend.(provisioned); ok {
+		if err := p.EnsureProvisioned(ctx); err != nil {
+			return err.Error()
+		}
+	}
 	if err := c.backend.Ping(ctx); err != nil {
 		return "db ping failed: " + err.Error()
 	}

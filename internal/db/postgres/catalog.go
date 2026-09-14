@@ -23,7 +23,7 @@ WHERE n.nspname <> 'pg_toast'
   AND n.nspname NOT LIKE 'pg\_temp\_%'
   AND n.nspname NOT LIKE 'pg\_toast\_temp\_%'
 ORDER BY n.nspname`
-	rows, err := b.pool.Query(ctx, q)
+	rows, err := b.read.Query(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("list schemas: %w", err)
 	}
@@ -89,7 +89,7 @@ FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = $1 AND c.relkind::text = ANY($2::text[])
 ORDER BY c.relname`
-	rows, err := b.pool.Query(ctx, q, schema, kinds)
+	rows, err := b.read.Query(ctx, q, schema, kinds)
 	if err != nil {
 		return nil, fmt.Errorf("list objects: %w", err)
 	}
@@ -123,7 +123,7 @@ FROM pg_extension e
 JOIN pg_namespace n ON n.oid = e.extnamespace
 WHERE n.nspname = $1
 ORDER BY e.extname`
-	rows, err := b.pool.Query(ctx, q, schema)
+	rows, err := b.read.Query(ctx, q, schema)
 	if err != nil {
 		return nil, fmt.Errorf("list extensions: %w", err)
 	}
@@ -174,7 +174,7 @@ WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r', 'p', 'v', 'm', 'f
 		size   int64
 		desc   string
 	)
-	err := b.pool.QueryRow(ctx, relQ, ref.Schema, ref.Name).Scan(&oid, &kind, &tuples, &size, &desc)
+	err := b.read.QueryRow(ctx, relQ, ref.Schema, ref.Name).Scan(&oid, &kind, &tuples, &size, &desc)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("object not found: %s", ref)
 	}
@@ -207,7 +207,7 @@ FROM pg_attribute a
 LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
 WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped
 ORDER BY a.attnum`
-	rows, err := b.pool.Query(ctx, colQ, oid)
+	rows, err := b.read.Query(ctx, colQ, oid)
 	if err != nil {
 		return nil, fmt.Errorf("describe columns of %s: %w", ref, err)
 	}
@@ -229,7 +229,7 @@ SELECT conname, contype::text, pg_get_constraintdef(oid)
 FROM pg_constraint
 WHERE conrelid = $1
 ORDER BY conname`
-	rows, err = b.pool.Query(ctx, conQ, oid)
+	rows, err = b.read.Query(ctx, conQ, oid)
 	if err != nil {
 		return nil, fmt.Errorf("describe constraints of %s: %w", ref, err)
 	}
@@ -254,7 +254,7 @@ FROM pg_index x
 JOIN pg_class i ON i.oid = x.indexrelid
 WHERE x.indrelid = $1
 ORDER BY i.relname`
-	rows, err = b.pool.Query(ctx, idxQ, oid)
+	rows, err = b.read.Query(ctx, idxQ, oid)
 	if err != nil {
 		return nil, fmt.Errorf("describe indexes of %s: %w", ref, err)
 	}

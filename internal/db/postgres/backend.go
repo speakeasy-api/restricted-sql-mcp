@@ -38,20 +38,53 @@ type execer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
-// Backend is a Postgres db.Backend backed by a lazily connecting pgx pool.
+// Backend is a Postgres db.Backend backed by lazily connecting pgx pools.
+// read serves queries, explain, metadata and readiness; write serves Begin.
+// They are the same pool unless the backend was built with a separate write
+// DSN (connection-level security).
 type Backend struct {
-	pool *pgxpool.Pool
-	pol  *policy.Policy
-	log  *slog.Logger
+	read  *pgxpool.Pool
+	write *pgxpool.Pool
+	pol   *policy.Policy
+	log   *slog.Logger
 }
 
 // New parses the DSN and creates the pool without requiring the database to
 // be reachable; connectivity is reported by Ping (and therefore /readyz).
 func New(ctx context.Context, dsn string, pol *policy.Policy, logger *slog.Logger) (*Backend, error) {
+	return NewWithWriteDSN(ctx, dsn, "", pol, logger)
+}
+
+// NewWithWriteDSN is New with a second pool for write transactions. An empty
+// writeDSN reuses the read pool.
+func NewWithWriteDSN(ctx context.Context, readDSN, writeDSN string, pol *policy.Policy, logger *slog.Logger) (*Backend, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	logger = logger.With("backend", "postgres")
+	read, err := newPool(ctx, readDSN)
+	if err != nil {
+		return nil, err
+	}
+	write := read
+	if writeDSN != "" {
+		if write, err = newPool(ctx, writeDSN); err != nil {
+			read.Close()
+			return nil, err
+		}
+	}
+	b := &Backend{read: read, write: write, pol: pol, log: logger}
+	pingCtx, cancel := context.WithTimeout(ctx, bootPingTimeout)
+	defer cancel()
+	if err := read.Ping(pingCtx); err != nil {
+		logger.Warn("postgres unreachable at boot; readiness will retry", "error", err.Error())
+	} else {
+		logger.Debug("postgres reachable at boot", "max_conns", read.Config().MaxConns, "separate_write_pool", write != read)
+	}
+	return b, nil
+}
+
+func newPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("invalid postgres DSN: %w", err)
@@ -64,21 +97,13 @@ func New(ctx context.Context, dsn string, pol *policy.Policy, logger *slog.Logge
 	if err != nil {
 		return nil, fmt.Errorf("create postgres pool: %w", err)
 	}
-	b := &Backend{pool: pool, pol: pol, log: logger}
-	pingCtx, cancel := context.WithTimeout(ctx, bootPingTimeout)
-	defer cancel()
-	if err := pool.Ping(pingCtx); err != nil {
-		logger.Warn("postgres unreachable at boot; readiness will retry", "error", err.Error())
-	} else {
-		logger.Debug("postgres reachable at boot", "max_conns", cfg.MaxConns)
-	}
-	return b, nil
+	return pool, nil
 }
 
 func (b *Backend) Dialect() policy.Dialect { return policy.Postgres }
 
 func (b *Backend) Ping(ctx context.Context) error {
-	err := b.pool.Ping(ctx)
+	err := b.read.Ping(ctx)
 	if err != nil {
 		b.log.Debug("ping failed", "error", err.Error())
 	}
@@ -86,7 +111,10 @@ func (b *Backend) Ping(ctx context.Context) error {
 }
 
 func (b *Backend) Close() error {
-	b.pool.Close()
+	b.read.Close()
+	if b.write != b.read {
+		b.write.Close()
+	}
 	return nil
 }
 
@@ -107,7 +135,7 @@ FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 JOIN unnest($1::text[], $2::text[]) AS want(s, t) ON want.s = n.nspname AND want.t = c.relname
 WHERE c.relkind IN ('r', 'v', 'm', 'p', 'f')`
-	rows, err := b.pool.Query(ctx, q, schemas, names)
+	rows, err := b.read.Query(ctx, q, schemas, names)
 	if err != nil {
 		return nil, fmt.Errorf("check tables: %w", err)
 	}
@@ -136,7 +164,7 @@ WHERE c.relkind IN ('r', 'v', 'm', 'p', 'f')`
 // beginReadOnly opens a READ ONLY transaction with the session protections
 // applied. The caller must Rollback it.
 func (b *Backend) beginReadOnly(ctx context.Context) (*pgxpool.Conn, pgx.Tx, error) {
-	conn, err := b.pool.Acquire(ctx)
+	conn, err := b.read.Acquire(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("acquire connection: %w", err)
 	}

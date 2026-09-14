@@ -26,7 +26,7 @@ type tx struct {
 // Begin acquires a dedicated connection, opens a transaction and applies the
 // session protections. The connection is released by Commit or Rollback.
 func (b *Backend) Begin(ctx context.Context) (db.Tx, error) {
-	conn, err := b.pool.Acquire(ctx)
+	conn, err := b.write.Acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("acquire connection: %w", err)
 	}

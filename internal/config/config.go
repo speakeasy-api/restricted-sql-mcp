@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -31,12 +32,22 @@ type Config struct {
 	LogLevel         string
 	Version          string
 
+	// ConnectionLevelSecurity treats the DSN as a bootstrap connection used
+	// to provision least-privilege database roles; tool traffic then runs as
+	// those roles. SecurityRolePrefix names them (<prefix>_ro, <prefix>_rw).
+	ConnectionLevelSecurity bool
+	SecurityRolePrefix      string
+
 	// Tunnel settings come from the environment, never from flags, so they do
 	// not show up in process listings.
 	TunnelGatewayURL     string
 	TunnelKey            string
 	TunnelServiceVersion string
 }
+
+// rolePrefixRE keeps provisioned role names plain identifiers in both
+// dialects; the longest suffix is "_rw" and Postgres caps names at 63 bytes.
+var rolePrefixRE = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,59}$`)
 
 // ErrHelp is returned by ParseFlags when --help was requested; the usage has
 // already been printed.
@@ -63,6 +74,8 @@ func ParseFlags(args []string, getenv func(string) string, version string) (*Con
 	fs.IntVar(&c.MaxOpenTxns, "max-open-txns", 8, "maximum concurrently open write transactions")
 	fs.BoolVar(&c.Tunnel, "tunnel", false, "start the gram tunnel agent (requires TUNNEL_GATEWAY_URL and TUNNEL_KEY)")
 	fs.StringVar(&c.LogLevel, "log-level", "info", "log level: debug|info|warn|error")
+	fs.BoolVar(&c.ConnectionLevelSecurity, "connection-level-security", false, "provision least-privilege database roles from the (bootstrap) DSN at boot and run all tool traffic as those roles")
+	fs.StringVar(&c.SecurityRolePrefix, "security-role-prefix", "restrictedsql", "prefix of the roles provisioned by --connection-level-security (<prefix>_ro, <prefix>_rw)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -148,6 +161,14 @@ func (c *Config) Validate() error {
 	if c.Tunnel {
 		if strings.TrimSpace(c.TunnelGatewayURL) == "" || strings.TrimSpace(c.TunnelKey) == "" {
 			return errors.New("--tunnel requires TUNNEL_GATEWAY_URL and TUNNEL_KEY in the environment")
+		}
+	}
+	if c.ConnectionLevelSecurity {
+		if !rolePrefixRE.MatchString(c.SecurityRolePrefix) {
+			return fmt.Errorf("--security-role-prefix %q must match %s", c.SecurityRolePrefix, rolePrefixRE.String())
+		}
+		if u, err := url.Parse(c.DSN); err != nil || u.Scheme == "" || u.Host == "" {
+			return errors.New("--connection-level-security requires a URL-form DSN (scheme://user:password@host:port/database)")
 		}
 	}
 	switch strings.ToLower(c.LogLevel) {

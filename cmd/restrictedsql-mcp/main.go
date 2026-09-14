@@ -22,6 +22,7 @@ import (
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/db"
 	chbackend "github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/db/clickhouse"
 	pgbackend "github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/db/postgres"
+	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/dbsec"
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/health"
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/mcpserver"
 	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/policy"
@@ -37,6 +38,10 @@ var version = "dev"
 
 // shutdownGrace bounds HTTP shutdown after SIGINT/SIGTERM.
 const shutdownGrace = 10 * time.Second
+
+// bootProvisionTimeout bounds the boot-time provisioning attempt; a failure
+// is retried by /readyz and by tool calls, never fatal.
+const bootProvisionTimeout = 10 * time.Second
 
 func main() {
 	cfg, err := config.ParseFlags(os.Args[1:], os.Getenv, version)
@@ -112,7 +117,15 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 		"txn_idle_timeout", cfg.TxnIdleTimeout.String(),
 		"max_open_txns", cfg.MaxOpenTxns,
 		"tunnel", cfg.Tunnel,
+		"connection_level_security", cfg.ConnectionLevelSecurity,
 	)
+	if gate, ok := backend.(*dbsec.Gate); ok {
+		provCtx, cancel := context.WithTimeout(ctx, bootProvisionTimeout)
+		if err := gate.EnsureProvisioned(provCtx); err != nil {
+			logger.Warn("connection-level security not provisioned at boot; /readyz and tool calls will retry", "error", err.Error())
+		}
+		cancel()
+	}
 
 	if cfg.Transport == "stdio" {
 		logger.Info("stdio transport selected; /healthz and /readyz are not available")
@@ -188,16 +201,33 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 	return nil
 }
 
-// selectDialect picks the guard and backend for the configured dialect.
+// selectDialect picks the guard and backend for the configured dialect. With
+// connection-level security the backend is a dbsec.Gate that provisions the
+// restricted roles first and then opens pools as those roles.
 func selectDialect(ctx context.Context, cfg *config.Config, pol *policy.Policy, logger *slog.Logger) (db.Backend, sqlguard.Guard, error) {
 	switch pol.Dialect {
 	case policy.Postgres:
+		guard := pgguard.NewWithLogger(logger)
+		if cfg.ConnectionLevelSecurity {
+			prov := &dbsec.PostgresProvisioner{DSN: cfg.DSN, Policy: pol, Prefix: cfg.SecurityRolePrefix, Logger: logger}
+			build := func(ctx context.Context, creds dbsec.Creds) (db.Backend, error) {
+				return pgbackend.NewWithWriteDSN(ctx, creds.ReadDSN, creds.WriteDSN, pol, logger)
+			}
+			return dbsec.NewGate(policy.Postgres, prov, build, logger), guard, nil
+		}
 		backend, err := pgbackend.New(ctx, cfg.DSN, pol, logger)
 		if err != nil {
 			return nil, nil, err
 		}
-		return backend, pgguard.NewWithLogger(logger), nil
+		return backend, guard, nil
 	case policy.ClickHouse:
+		if cfg.ConnectionLevelSecurity {
+			prov := &dbsec.ClickHouseProvisioner{DSN: cfg.DSN, Policy: pol, Prefix: cfg.SecurityRolePrefix, Logger: logger}
+			build := func(ctx context.Context, creds dbsec.Creds) (db.Backend, error) {
+				return chbackend.New(ctx, creds.ReadDSN, pol, logger)
+			}
+			return dbsec.NewGate(policy.ClickHouse, prov, build, logger), chguard.New(), nil
+		}
 		backend, err := chbackend.New(ctx, cfg.DSN, pol, logger)
 		if err != nil {
 			return nil, nil, err
