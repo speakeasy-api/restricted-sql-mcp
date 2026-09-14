@@ -26,9 +26,11 @@ and explain) with no way to touch anything outside the allowlist.
 5. **No inbound path.** The listener binds loopback by default. The only ingress is
    the gram tunnel agent, which dials out and proxies to the local `/mcp`.
 
-Recommended second layer: point the DSN at a database role that only has the
-grants the allowlist needs. The server does not depend on it, but it makes a bug
-in the guard non-fatal.
+Second layer, independent of the guard: `--connection-level-security` makes the
+server provision database roles that hold exactly the grants the allowlist needs
+and run every tool call as those roles (see below). Without the flag, point the
+DSN at such a role yourself. Either way the server does not depend on it, but it
+makes a bug in the guard non-fatal.
 
 The full policy is in `docs/superpowers/specs/2026-09-14-restricted-sql-mcp-design.md`.
 
@@ -51,6 +53,10 @@ restrictedsql-mcp \
   --max-open-txns 8
   --tunnel                               (start the gram tunnel agent; requires TUNNEL_GATEWAY_URL,
                                           TUNNEL_KEY; TUNNEL_SERVICE_VERSION defaults to the build version)
+  --connection-level-security            (treat the DSN as a bootstrap connection, provision
+                                          least-privilege roles and run tool traffic as them;
+                                          see "Connection-level security")
+  --security-role-prefix restrictedsql   (name prefix of the provisioned roles: <prefix>_ro, <prefix>_rw)
   --log-level info|debug
 ```
 
@@ -63,13 +69,78 @@ Boot semantics:
   The server starts, `/readyz` answers 503 with the reason, and readiness is
   re-evaluated on every probe.
 - `GET /healthz` is 200 once the process serves. `GET /readyz` is 200 when the
-  database answers a ping and every allowlisted table exists, else 503 with
+  database answers a ping and every allowlisted table exists (and, with
+  `--connection-level-security`, the roles have been provisioned), else 503 with
   `{"ready":false,"reason":"..."}`. The body also carries
   `"tunnel":"disabled|connecting|connected|stopped"`, which does not gate readiness.
 - Logs are JSON on stdout (stderr for the stdio transport, where stdout carries the
   protocol). At `debug` they include raw and canonical SQL, referenced tables,
   rejection reasons, timings, and transaction lifecycle events. The DSN is never
   logged.
+
+## Connection-level security
+
+`--connection-level-security` adds a second enforcement layer inside the database
+itself. The DSN becomes a **bootstrap** connection used only to provision roles;
+once that succeeds the bootstrap connection is closed and every tool call runs on
+pools that authenticate as the provisioned roles. Even if a statement slipped past
+the guard, the database would refuse anything outside the allowlist.
+
+What the bootstrap DSN needs:
+
+- Postgres: `CREATEROLE` (or superuser), and either ownership of the allowlisted
+  tables and their schemas or the matching privileges `WITH GRANT OPTION`
+  (`USAGE` on the schemas, `SELECT` on read tables, `SELECT/INSERT/UPDATE/DELETE`
+  on write tables, `USAGE/SELECT` on the write tables' sequences). The role also
+  needs `USAGE` on every schema it should be able to revoke from; schemas it
+  cannot use are skipped.
+- ClickHouse: `ACCESS MANAGEMENT` and the granted privileges `WITH GRANT OPTION`
+  (the `default` user with `access_management=1` has both).
+
+What gets created, on every boot and again on every `/readyz` probe until it
+succeeds (the whole Postgres sequence runs in one transaction):
+
+- Postgres `restrictedsql_ro` (`--security-role-prefix` changes the prefix):
+  `LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION`, role-level
+  `search_path = <default-schema>` and `statement_timeout = <flag>`; every table,
+  sequence and schema privilege the bootstrap can address is revoked; then
+  `USAGE` on the read tables' schemas and `SELECT` on the read tables.
+- Postgres `restrictedsql_rw`, only with `--dangerously-add-write-tools`: the
+  same hardening; `USAGE` on the schemas of read ∪ write, `SELECT` on read ∪
+  write, `INSERT/UPDATE/DELETE` on the write tables, and `USAGE/SELECT` on the
+  sequences the write tables depend on (serial, identity, and any sequence named
+  in a column default). The write pool is used only by `begin_transaction`.
+- ClickHouse `restrictedsql_ro`: `CREATE USER OR REPLACE ... IDENTIFIED WITH
+  sha256_password` with `readonly = 1` pinned (`READONLY`) and the per-query
+  limits the server sends (`max_execution_time`, `max_result_rows`,
+  `result_overflow_mode`) allowed only up to the policy's caps
+  (`CHANGEABLE_IN_READONLY`); `REVOKE ALL ON *.*`; `SELECT` on each read table;
+  `SHOW TABLES` and `SHOW COLUMNS` on the read tables' databases; `SELECT` on
+  `system.data_skipping_indices`. ClickHouse filters `system.databases`,
+  `system.tables` and `system.columns` to what the user may see, so
+  `list_schemas` and `list_objects` show only the databases that hold
+  allowlisted tables and the tables in them.
+
+Passwords are 32 random bytes generated per boot, held only in memory and never
+logged; on Postgres they are sent as a SCRAM-SHA-256 verifier when
+`password_encryption` is `scram-sha-256`, so the plaintext never appears in a
+statement. Every boot rotates them, and every boot re-applies the revoke/grant
+sequence, so a drifted grant is repaired and a stale password is replaced.
+Because of that rotation, run a **single replica**: a second process would
+rotate the first one's passwords out from under it. Role names must match
+`^[a-z_][a-z0-9_]{0,59}$`.
+
+Boot never fails because of provisioning. If it did not succeed, `/readyz`
+answers 503 with `connection-level security not provisioned: <error>` (the
+error names the statement that failed, with the password redacted) and every
+tool returns the same message; each probe and each tool call retries. The
+`info` log line `postgres roles provisioned` / `clickhouse user provisioned`
+lists the roles and the tables they were granted.
+
+Not covered: privileges granted to `PUBLIC` still apply to the provisioned
+roles, and an existing role with the same name keeps any role memberships it
+already had; grants that belong to other grantors cannot be revoked by the
+bootstrap role.
 
 ## Tools
 

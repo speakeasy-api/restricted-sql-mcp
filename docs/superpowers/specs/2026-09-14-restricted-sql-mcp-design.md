@@ -406,3 +406,72 @@ stays fast. `make e2e`:
   no Service/Ingress (tunnel only), one replica (transactions are process-local).
 - Docs recommend pointing the DSN at a database role that only has the grants the
   allowlist needs, as an independent second layer.
+
+## 11. Connection-level security (as built)
+
+`--connection-level-security` (default off) adds a database-side layer that does
+not depend on the guard. `--security-role-prefix` (default `restrictedsql`) names
+the roles. Without the flag, behaviour is unchanged: one pool on the DSN.
+
+Roles. The DSN is a bootstrap connection. On Postgres the server creates or
+updates `<prefix>_ro` and, only with `--dangerously-add-write-tools`,
+`<prefix>_rw`: `LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+NOREPLICATION`, a fresh 32-byte random password per boot held only in memory
+(sent as a SCRAM-SHA-256 verifier when `password_encryption` is scram),
+`ALTER ROLE ... SET search_path = <default-schema>` and `SET statement_timeout =
+<flag>`. For every schema the bootstrap has `USAGE` on (system schemas
+excluded) it runs `REVOKE ALL ON ALL TABLES IN SCHEMA`, `REVOKE ALL ON ALL
+SEQUENCES IN SCHEMA`, `REVOKE ALL ON SCHEMA`; then grants exactly: ro — `USAGE`
+on schemas of R, `SELECT` on R; rw — `USAGE` on schemas of R ∪ W, `SELECT` on
+R ∪ W, `INSERT/UPDATE/DELETE` on W, `USAGE, SELECT` on the sequences W tables
+depend on (`pg_depend` auto/internal dependencies and sequences referenced by
+`pg_attrdef` defaults). Creation-or-update runs as a `DO` block so the
+CREATE/ALTER choice is made inside the same transaction as the grants; the whole
+sequence is one transaction, so a failure leaves the previous state intact.
+
+On ClickHouse the server runs `CREATE USER OR REPLACE <prefix>_ro IDENTIFIED WITH
+sha256_password BY '<random>' SETTINGS readonly = 1 READONLY, max_execution_time
+= <timeout> CHANGEABLE_IN_READONLY MIN 0 MAX <timeout>, max_result_rows =
+<max-rows+1> CHANGEABLE_IN_READONLY MIN 0 MAX <max-rows+1>, result_overflow_mode
+= 'break' CHANGEABLE_IN_READONLY`, `REVOKE ALL ON *.*`, `GRANT SELECT ON db.table`
+per R table, `GRANT SHOW TABLES, SHOW COLUMNS ON db.*` per R database, and
+`GRANT SELECT ON system.data_skipping_indices`. A user pinned to `readonly = 1`
+rejects any per-query setting change, so the backend's existing per-query
+limits are admitted through `CHANGEABLE_IN_READONLY` with the policy values as
+hard maxima; the backend is unchanged. ClickHouse filters `system.databases`,
+`system.tables` and `system.columns` by the user's grants, so the metadata tools
+list only databases holding allowlisted tables and the tables in those
+databases; `system.data_skipping_indices` needs an explicit `SELECT` grant.
+
+Connection. After provisioning, tool traffic runs on pools whose DSN is the
+bootstrap DSN with user and password replaced (`internal/dbsec.RewriteDSN`,
+`net/url`, all other query parameters preserved, `user`/`username`/`password`
+query keys stripped). The Postgres backend has a read pool (Query, Explain,
+metadata, TablesExist, Ping) and, when writes are enabled, a write pool used by
+Begin. `SET ROLE` is never used. The bootstrap connection is a single `pgx`
+connection (native `clickhouse-go` connection) opened per provisioning attempt
+and closed when it returns.
+
+Boot semantics. `internal/dbsec.Gate` implements `db.Backend` and
+`db.TxBackend`; it is the backend `main` hands to the MCP server, the transaction
+registry and the health checker. Every call first runs `EnsureProvisioned`,
+which provisions and opens the real backend once (single-flight; concurrent
+callers wait) and afterwards is a cheap atomic load. Boot attempts it with a
+10 s timeout and only logs on failure; `/readyz` (3 s timeout) and every tool
+call retry. Until it succeeds `/readyz` is 503 with reason `connection-level
+security not provisioned: <err>` and tools return the same text. `<err>` names
+the failing statement (`statement "GRANT SELECT ON TABLE ... TO ..." failed:
+ERROR: permission denied ...`); role statements are rendered with the password
+redacted. Passwords and DSNs are never logged; the `info` summary lists the
+roles and the tables, schemas and sequences granted.
+
+Code layout: `internal/dbsec/provisioner.go` (`Provisioner`, `Creds`,
+`NotProvisionedError`, `StatementError`, `NewPassword`, `RewriteDSN`),
+`internal/dbsec/gate.go`, `internal/dbsec/postgres.go`,
+`internal/dbsec/clickhouse.go`; `config.Config.ConnectionLevelSecurity` and
+`SecurityRolePrefix`; `pgbackend.NewWithWriteDSN`; `health` recognises a backend
+with `EnsureProvisioned` and reports its error verbatim.
+
+Operational notes: single replica (every boot rotates the passwords); privileges
+granted to `PUBLIC` and pre-existing role memberships are outside what the
+server revokes; e2e coverage is in `e2e/security_test.go`.

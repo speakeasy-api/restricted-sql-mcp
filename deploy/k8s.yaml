@@ -52,6 +52,11 @@ spec:
             - --max-rows=1000
             - --log-level=info
             - --tunnel
+            # Provision least-privilege roles from DATABASE_URL (which then needs
+            # CREATEROLE and GRANT OPTION on the allowlisted tables) and run
+            # tool traffic as them. Keep replicas at 1: passwords rotate per boot.
+            # - --connection-level-security
+            # - --security-role-prefix=restrictedsql
           env:
             - name: DATABASE_URL
               valueFrom:
