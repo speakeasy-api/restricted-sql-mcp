@@ -90,6 +90,34 @@ func TestClickHouseReadRejectsWriteVerbs(t *testing.T) {
 	}
 }
 
+func TestClickHouseInTableBypass(t *testing.T) {
+	s := chServer(t, ServerOpts{})
+	// Each of these reaches app.forbidden_secrets through the set position of
+	// IN and would otherwise act as an exfiltration oracle for the secret.
+	for _, sql := range []string{
+		"SELECT (1, 'hunter2') IN (app.forbidden_secrets)",
+		"SELECT (1, 'hunter2') IN ((app.forbidden_secrets))",
+		"SELECT (1, 'hunter2') IN (forbidden_secrets)",
+		"SELECT id GLOBAL IN (app.forbidden_secrets) FROM allowed_orders",
+		"SELECT in((1, 'hunter2'), app.forbidden_secrets)",
+		"SELECT globalIn((1, 'hunter2'), forbidden_secrets)",
+		"SELECT arrayFilter(x -> (x, 'hunter2') IN (app.forbidden_secrets), [1])",
+	} {
+		s.mustReject(t, "execute_sql_readonly", map[string]any{"sql": sql}, "rejected")
+	}
+	// Legitimate set-position operands must keep working: constant lists,
+	// subqueries, scalar WITH aliases, and relation CTEs.
+	for _, sql := range []string{
+		"SELECT id IN (1, 2, 3) FROM allowed_orders",
+		"SELECT id IN (SELECT customer_id FROM allowed_orders) FROM allowed_orders",
+		"WITH 5 AS s SELECT id IN (s) FROM allowed_orders",
+		"WITH t AS (SELECT id FROM allowed_orders) SELECT id IN (t) FROM allowed_orders",
+		"SELECT in(id, (1, 2, 3)) FROM allowed_orders",
+	} {
+		s.mustCall(t, "execute_sql_readonly", map[string]any{"sql": sql})
+	}
+}
+
 func TestClickHouseReadStatementTimeout(t *testing.T) {
 	s := chServer(t, ServerOpts{ExtraArgs: []string{"--statement-timeout", "1s"}})
 	sql := "SELECT count() FROM allowed_orders AS t0"

@@ -111,18 +111,41 @@ func afterFirstSemicolon(raw string) (string, bool) {
 // visitor carries the policy, the CTE name scopes, and the referenced tables
 // while a single statement is walked.
 type visitor struct {
-	pol    *policy.Policy
-	scopes [][]string
-	tables map[policy.TableRef]struct{}
+	pol     *policy.Policy
+	scopes  [][]string
+	scalars [][]string
+	tables  map[policy.TableRef]struct{}
 }
 
-func (v *visitor) pushScope() { v.scopes = append(v.scopes, nil) }
-func (v *visitor) popScope()  { v.scopes = v.scopes[:len(v.scopes)-1] }
+func (v *visitor) pushScope() {
+	v.scopes = append(v.scopes, nil)
+	v.scalars = append(v.scalars, nil)
+}
+func (v *visitor) popScope() {
+	v.scopes = v.scopes[:len(v.scopes)-1]
+	v.scalars = v.scalars[:len(v.scalars)-1]
+}
 func (v *visitor) addCTE(name string) {
 	v.scopes[len(v.scopes)-1] = append(v.scopes[len(v.scopes)-1], name)
 }
 func (v *visitor) cteInScope(name string) bool {
-	for _, scope := range v.scopes {
+	return nameInScopes(v.scopes, name)
+}
+
+// addScalar records a WITH scalar-alias name (WITH <expr> AS <name>). These
+// are tracked separately from relation CTEs: a scalar alias resolves to a
+// value, so it is a valid operand of IN, but it must never satisfy a table
+// reference (that would let `WITH 5 AS forbidden SELECT * FROM forbidden`
+// reach the real table).
+func (v *visitor) addScalar(name string) {
+	v.scalars[len(v.scalars)-1] = append(v.scalars[len(v.scalars)-1], name)
+}
+func (v *visitor) scalarInScope(name string) bool {
+	return nameInScopes(v.scalars, name)
+}
+
+func nameInScopes(scopes [][]string, name string) bool {
+	for _, scope := range scopes {
 		for _, n := range scope {
 			if n == name {
 				return true

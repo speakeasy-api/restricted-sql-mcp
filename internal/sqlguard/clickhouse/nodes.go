@@ -149,9 +149,11 @@ func (v *visitor) cte(c *parser.CTEStmt) error {
 		v.addCTE(name.Name)
 		return nil
 	}
-	if _, ok := c.Alias.(*parser.Ident); !ok {
+	alias, ok := c.Alias.(*parser.Ident)
+	if !ok {
 		return sqlguard.Reject("WITH expression alias must be an identifier", nodeName(c.Alias))
 	}
+	v.addScalar(alias.Name)
 	return v.expr(c.Expr)
 }
 
@@ -573,6 +575,11 @@ func (v *visitor) binaryOperation(n *parser.BinaryOperation) error {
 		case *parser.NestedIdentifier, *parser.Path:
 			return sqlguard.Reject("IN with a table name is not allowed", parser.Format(r))
 		}
+		// A parenthesised single identifier, e.g. IN (forbidden_secrets) or
+		// IN (app.forbidden_secrets), is also resolved as a table.
+		if name, ok := v.relationRefInSet(n.RightExpr); ok {
+			return sqlguard.Reject("IN with a table name is not allowed", name)
+		}
 	}
 	return v.expr(n.RightExpr)
 }
@@ -600,6 +607,14 @@ func (v *visitor) lambda(n *parser.BinaryOperation) error {
 	return v.expr(n.RightExpr)
 }
 
+// setFunctions are the membership functions whose set argument (everything
+// after the first) ClickHouse resolves as a table when it is an identifier,
+// e.g. in(x, forbidden_secrets) or globalIn(x, app.forbidden_secrets). These
+// are the function-call spellings of the IN operator and need the same guard.
+var setFunctions = map[string]struct{}{
+	"in": {}, "notin": {}, "globalin": {}, "globalnotin": {},
+}
+
 func (v *visitor) functionExpr(f *parser.FunctionExpr) error {
 	if f == nil || f.Name == nil {
 		return sqlguard.Reject("malformed function call", "FunctionExpr")
@@ -607,8 +622,74 @@ func (v *visitor) functionExpr(f *parser.FunctionExpr) error {
 	if !policy.AllowedFunction(policy.ClickHouse, f.Name.Name) {
 		return sqlguard.Reject("function is not allowed", f.Name.Name)
 	}
+	if _, ok := setFunctions[strings.ToLower(f.Name.Name)]; ok {
+		if err := v.rejectSetTableArgs(f.Params); err != nil {
+			return err
+		}
+	}
 	if f.Params == nil {
 		return nil
 	}
 	return v.expr(f.Params)
+}
+
+// rejectSetTableArgs rejects a table identifier in the set position (any
+// argument after the first) of a membership function.
+func (v *visitor) rejectSetTableArgs(params *parser.ParamExprList) error {
+	if params == nil || params.Items == nil {
+		return nil
+	}
+	for i, item := range params.Items.Items {
+		if i == 0 {
+			continue
+		}
+		arg := item
+		if ce, ok := item.(*parser.ColumnExpr); ok {
+			arg = ce.Expr
+		}
+		if name, ok := v.relationRefInSet(arg); ok {
+			return sqlguard.Reject("IN with a table name is not allowed", name)
+		}
+	}
+	return nil
+}
+
+// relationRefInSet reports whether e, in a set/membership position, denotes a
+// table reference rather than a value. It unwraps parentheses and flags a
+// qualified name (schema.table) or a bare identifier that is not a CTE or
+// scalar alias in scope; ClickHouse resolves such a name as a table.
+func (v *visitor) relationRefInSet(e parser.Expr) (string, bool) {
+	switch n := unwrapParens(e).(type) {
+	case *parser.NestedIdentifier:
+		return parser.Format(n), true
+	case *parser.Path:
+		return parser.Format(n), true
+	case *parser.Ident:
+		if v.cteInScope(n.Name) || v.scalarInScope(n.Name) {
+			return "", false
+		}
+		return n.Name, true
+	}
+	return "", false
+}
+
+// unwrapParens follows a chain of parenthesised single-element expression
+// lists, e.g. (x) or ((x)), returning the innermost expression. Anything with
+// an alias, a column-arg list, or more than one element is returned as-is.
+func unwrapParens(e parser.Expr) parser.Expr {
+	for {
+		pl, ok := e.(*parser.ParamExprList)
+		if !ok || pl.ColumnArgList != nil || pl.Items == nil || len(pl.Items.Items) != 1 {
+			return e
+		}
+		inner := pl.Items.Items[0]
+		if ce, ok := inner.(*parser.ColumnExpr); ok {
+			if ce.Alias != nil {
+				return e
+			}
+			e = ce.Expr
+			continue
+		}
+		e = inner
+	}
 }
