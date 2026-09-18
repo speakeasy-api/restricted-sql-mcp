@@ -53,6 +53,8 @@ restrictedsql-mcp \
   --max-open-txns 8
   --tunnel                               (start the gram tunnel agent; requires TUNNEL_GATEWAY_URL,
                                           TUNNEL_KEY; TUNNEL_SERVICE_VERSION defaults to the build version)
+  --tunnel-only                          (refuse /mcp requests that did not arrive through the in-process
+                                          tunnel agent; direct loopback access gets 401; requires --tunnel)
   --connection-level-security            (treat the DSN as a bootstrap connection, provision
                                           least-privilege roles and run tool traffic as them;
                                           see "Connection-level security")
@@ -266,3 +268,15 @@ loopback; if your CNI keeps kubelet from probing 127.0.0.1, listen on
 Set `TUNNEL_GATEWAY_URL` and `TUNNEL_KEY` and pass `--tunnel` to expose the server
 through gram. The agent dials out and proxies to `http://<listen>/mcp`; the
 readiness body reports the tunnel state without gating on it.
+
+### Tunnel-only mode
+
+A loopback bind is not isolation: any process on the host (or any container in
+the same pod) can reach `/mcp`. `--tunnel-only` closes that path. At boot the
+server generates a 256-bit token that never leaves process memory, pins it on the
+local URL the in-process tunnel agent proxies to (the agent merges that query
+into every request it forwards), and refuses any `/mcp` request without it with
+`401`. The token is stripped before the MCP handler sees the request, is not
+logged, and cannot be obtained through the tunnel. `/healthz` and `/readyz`
+stay open for probes. `--transport stdio` needs none of this: only the parent
+process holds the pipe.

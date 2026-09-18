@@ -60,12 +60,18 @@ restrictedsql-mcp \
   --max-open-txns 8
   --tunnel                               (start gram tunnel agent; requires TUNNEL_GATEWAY_URL,
                                           TUNNEL_KEY; TUNNEL_SERVICE_VERSION defaults to build version)
+  --tunnel-only                          (refuse /mcp requests that did not come through the in-process
+                                          tunnel agent; requires --tunnel and --transport http)
   --log-level info|debug
 ```
 
 Boot semantics:
 - Invalid flags (unknown dialect, no read tables, unparsable table name, write tools on
-  ClickHouse, `--tunnel` without env) exit 2 with a clear message.
+  ClickHouse, `--tunnel` without env, `--tunnel-only` without `--tunnel` or with
+  stdio) exit 2 with a clear message.
+- `--tunnel-only`: a per-boot random token is pinned on the agent's local MCP URL
+  query; `/mcp` returns 401 to any request without it and strips it before the MCP
+  handler. Health endpoints stay open.
 - DB unreachable or allowlisted tables missing does **not** fail boot. The server
   starts, `/readyz` reports not-ready with the reason, and readiness is re-evaluated
   on each probe. This matches "booting just boots; health/init probes validate".

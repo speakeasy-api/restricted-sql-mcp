@@ -52,6 +52,7 @@ spec:
             - --max-rows=1000
             - --log-level=info
             - --tunnel
+            - --tunnel-only   # only the in-process tunnel agent may reach /mcp; probes still hit /healthz and /readyz
             # Provision least-privilege roles from DATABASE_URL (which then needs
             # CREATEROLE and GRANT OPTION on the allowlisted tables) and run
             # tool traffic as them. Keep replicas at 1: passwords rotate per boot.

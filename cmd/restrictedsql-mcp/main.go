@@ -109,6 +109,7 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 		"default_schema", pol.DefaultSchema,
 		"transport", cfg.Transport,
 		"listen", cfg.Listen,
+		"tunnel_only", cfg.TunnelOnly,
 		"read_tables", refStrings(pol.ReadTables),
 		"write_tables", refStrings(pol.WriteTables),
 		"writes_enabled", pol.WritesEnabled,
@@ -136,11 +137,22 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 	}
 
 	var runner *tunnel.Runner
+	var gate *tunnel.Gate
+	localURL := localMCPURL(cfg.Listen)
+	if cfg.TunnelOnly {
+		if gate, err = tunnel.NewGate(); err != nil {
+			return err
+		}
+		if localURL, err = gate.LocalMCPURL(localURL); err != nil {
+			return err
+		}
+		logger.Info("tunnel-only mode: /mcp refuses requests that did not come through the in-process tunnel agent")
+	}
 	if cfg.Tunnel {
 		runner, err = tunnel.New(tunnel.Config{
 			GatewayURL:     cfg.TunnelGatewayURL,
 			APIKey:         cfg.TunnelKey,
-			LocalMCPURL:    localMCPURL(cfg.Listen),
+			LocalMCPURL:    localURL,
 			ServiceVersion: cfg.TunnelServiceVersion,
 			Metadata: map[string]string{
 				"dialect":     string(pol.Dialect),
@@ -155,9 +167,13 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 
 	checker := health.New(backend, pol.AllTables(), runner.State, logger)
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
+	var mcpHandler http.Handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
 		Logger: logger,
-	}))
+	})
+	if gate != nil {
+		mcpHandler = gate.Wrap(mcpHandler)
+	}
+	mux.Handle("/mcp", mcpHandler)
 	mux.HandleFunc("/healthz", checker.Healthz)
 	mux.HandleFunc("/readyz", checker.Readyz)
 

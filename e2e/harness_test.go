@@ -61,6 +61,9 @@ type ServerOpts struct {
 	// AnyReadiness accepts whatever /readyz answers; use it for tests that
 	// only need the MCP endpoint (tool listing) and not a live database.
 	AnyReadiness bool
+	// NoClient skips the direct MCP client connection to /mcp; use it when
+	// the server is booted with --tunnel-only and direct access must fail.
+	NoClient bool
 }
 
 // Server is a running binary with a connected MCP client session.
@@ -210,6 +213,9 @@ func bootServer(t *testing.T, o ServerOpts) *Server {
 		time.Sleep(100 * time.Millisecond)
 	}
 
+	if o.NoClient {
+		return s
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	client := mcp.NewClient(&mcp.Implementation{Name: "e2e", Version: "0"}, nil)

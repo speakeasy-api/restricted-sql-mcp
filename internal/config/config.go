@@ -29,6 +29,7 @@ type Config struct {
 	TxnIdleTimeout   time.Duration
 	MaxOpenTxns      int
 	Tunnel           bool
+	TunnelOnly       bool
 	LogLevel         string
 	Version          string
 
@@ -73,6 +74,7 @@ func ParseFlags(args []string, getenv func(string) string, version string) (*Con
 	fs.DurationVar(&c.TxnIdleTimeout, "txn-idle-timeout", 2*time.Minute, "write transactions idle longer than this are rolled back")
 	fs.IntVar(&c.MaxOpenTxns, "max-open-txns", 8, "maximum concurrently open write transactions")
 	fs.BoolVar(&c.Tunnel, "tunnel", false, "start the gram tunnel agent (requires TUNNEL_GATEWAY_URL and TUNNEL_KEY)")
+	fs.BoolVar(&c.TunnelOnly, "tunnel-only", false, "refuse /mcp requests that did not arrive through the in-process gram tunnel agent (requires --tunnel and --transport http)")
 	fs.StringVar(&c.LogLevel, "log-level", "info", "log level: debug|info|warn|error")
 	fs.BoolVar(&c.ConnectionLevelSecurity, "connection-level-security", false, "provision least-privilege database roles from the (bootstrap) DSN at boot and run all tool traffic as those roles")
 	fs.StringVar(&c.SecurityRolePrefix, "security-role-prefix", "restrictedsql", "prefix of the roles provisioned by --connection-level-security (<prefix>_ro, <prefix>_rw)")
@@ -157,6 +159,14 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxOpenTxns <= 0 {
 		return errors.New("--max-open-txns must be greater than zero")
+	}
+	if c.TunnelOnly {
+		if !c.Tunnel {
+			return errors.New("--tunnel-only requires --tunnel")
+		}
+		if c.Transport != "http" {
+			return errors.New("--tunnel-only requires --transport http")
+		}
 	}
 	if c.Tunnel {
 		if strings.TrimSpace(c.TunnelGatewayURL) == "" || strings.TrimSpace(c.TunnelKey) == "" {
