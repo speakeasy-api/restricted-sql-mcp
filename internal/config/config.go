@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/policy"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
 )
 
 // Config is the resolved boot configuration.

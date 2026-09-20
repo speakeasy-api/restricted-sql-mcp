@@ -17,8 +17,8 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/db"
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/policy"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/db"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
 )
 
 const contextGrace = 5 * time.Second

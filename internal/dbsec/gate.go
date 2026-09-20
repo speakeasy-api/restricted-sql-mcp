@@ -8,8 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/db"
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/policy"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/db"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
 )
 
 // Builder opens the real backend on the derived DSNs.

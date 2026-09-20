@@ -1,4 +1,4 @@
-module github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp
+module github.com/speakeasy-api/gram-restricted-sql-mcp
 
 go 1.27.0
 

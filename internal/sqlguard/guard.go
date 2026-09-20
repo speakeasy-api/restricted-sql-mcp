@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/policy"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
 )
 
 // Mode selects which statement kinds and table sets apply.

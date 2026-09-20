@@ -7,8 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/db"
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/policy"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/db"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
 )
 
 // ListSchemas returns every namespace except toast and temp schemas. Catalog

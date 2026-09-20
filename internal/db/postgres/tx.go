@@ -10,7 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/db"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/db"
 )
 
 // tx is one write transaction pinned to a dedicated pooled connection.

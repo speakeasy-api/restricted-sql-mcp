@@ -6,8 +6,8 @@ import (
 
 	"github.com/AfterShip/clickhouse-sql-parser/parser"
 
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/policy"
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/sqlguard"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard"
 )
 
 func unsupported(e parser.Expr) error {

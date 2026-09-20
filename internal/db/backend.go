@@ -8,8 +8,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/policy"
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/sqlguard"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard"
 )
 
 // Column describes one result column.

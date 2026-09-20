@@ -12,8 +12,8 @@ import (
 
 	pg_query "github.com/pganalyze/pg_query_go/v6"
 
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/policy"
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/sqlguard"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard"
 )
 
 const logSQLLimit = 2000

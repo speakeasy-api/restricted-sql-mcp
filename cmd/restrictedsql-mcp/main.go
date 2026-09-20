@@ -18,19 +18,19 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/config"
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/db"
-	chbackend "github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/db/clickhouse"
-	pgbackend "github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/db/postgres"
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/dbsec"
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/health"
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/mcpserver"
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/policy"
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/sqlguard"
-	chguard "github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/sqlguard/clickhouse"
-	pgguard "github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/sqlguard/postgres"
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/tunnel"
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/txn"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/config"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/db"
+	chbackend "github.com/speakeasy-api/gram-restricted-sql-mcp/internal/db/clickhouse"
+	pgbackend "github.com/speakeasy-api/gram-restricted-sql-mcp/internal/db/postgres"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/dbsec"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/health"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/mcpserver"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard"
+	chguard "github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard/clickhouse"
+	pgguard "github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard/postgres"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/tunnel"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/txn"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".

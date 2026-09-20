@@ -8,7 +8,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/ThomasRooney/gram-restrictedsql-tunnel-mcp/internal/sqlguard"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard"
 )
 
 // BeginInput is the (empty) input of begin_transaction.
