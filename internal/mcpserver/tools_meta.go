@@ -37,26 +37,36 @@ type ObjectDetailsInput struct {
 }
 
 func (s *server) registerMetaTools(srv *mcp.Server) {
+	objectsDescription := "List the tables, views, sequences, or extensions inside one schema, with row estimates and sizes where the database exposes them."
+	detailsDescription := "Describe one table or view: columns with types and defaults, constraints, indexes, storage size, row estimate, and engine details on ClickHouse."
+	if s.Policy.AnnotationMode() {
+		objectsDescription = "List application tables and views in a schema, including denied objects. Each access field gives queryability, selectable columns, denial reason, and catalog generation."
+		detailsDescription = "Discover columns, types, structural constraints and foreign-key relationships for an application table or view. Each column's access field gives its tier, annotation status, selectability and denial reason. Raw comments and schema expressions are omitted."
+	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_schemas",
 		Description: "List the schemas (Postgres) or databases (ClickHouse) present in the connected instance.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.listSchemas)
 	mcp.AddTool(srv, &mcp.Tool{
-		Name: "list_objects",
-		Description: "List the tables, views, sequences, or extensions inside one schema, with row estimates and " +
-			"sizes where the database exposes them.",
+		Name:        "list_objects",
+		Description: objectsDescription,
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.listObjects)
 	mcp.AddTool(srv, &mcp.Tool{
-		Name: "get_object_details",
-		Description: "Describe one table or view: columns with types and defaults, constraints, indexes, storage " +
-			"size, row estimate, and engine details on ClickHouse.",
+		Name:        "get_object_details",
+		Description: detailsDescription,
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.objectDetails)
 }
 
 func (s *server) listSchemas(ctx context.Context, _ *mcp.CallToolRequest, _ ListSchemasInput) (*mcp.CallToolResult, ListSchemasOutput, error) {
+	s, ctx, finish, admitErr := s.admitted(ctx)
+	if admitErr != nil {
+		return fail[ListSchemasOutput](admitErr)
+	}
+	defer finish()
+
 	ctx, cancel := s.callContext(ctx)
 	defer cancel()
 	start := time.Now()
@@ -69,10 +79,19 @@ func (s *server) listSchemas(ctx context.Context, _ *mcp.CallToolRequest, _ List
 		schemas = []db.Schema{}
 	}
 	s.Logger.DebugContext(ctx, "list_schemas ok", "count", len(schemas), "duration", time.Since(start).String())
+	if err := finish(); err != nil {
+		return fail[ListSchemasOutput](err)
+	}
 	return nil, ListSchemasOutput{Schemas: schemas}, nil
 }
 
 func (s *server) listObjects(ctx context.Context, _ *mcp.CallToolRequest, in ListObjectsInput) (*mcp.CallToolResult, ListObjectsOutput, error) {
+	s, ctx, finish, admitErr := s.admitted(ctx)
+	if admitErr != nil {
+		return fail[ListObjectsOutput](admitErr)
+	}
+	defer finish()
+
 	switch in.ObjectType {
 	case "", "table", "view", "sequence", "extension":
 	default:
@@ -93,10 +112,19 @@ func (s *server) listObjects(ctx context.Context, _ *mcp.CallToolRequest, in Lis
 		objects = []db.Object{}
 	}
 	s.Logger.DebugContext(ctx, "list_objects ok", "schema", in.Schema, "object_type", in.ObjectType, "count", len(objects), "duration", time.Since(start).String())
+	if err := finish(); err != nil {
+		return fail[ListObjectsOutput](err)
+	}
 	return nil, ListObjectsOutput{Objects: objects}, nil
 }
 
 func (s *server) objectDetails(ctx context.Context, _ *mcp.CallToolRequest, in ObjectDetailsInput) (*mcp.CallToolResult, db.ObjectDetails, error) {
+	s, ctx, finish, admitErr := s.admitted(ctx)
+	if admitErr != nil {
+		return fail[db.ObjectDetails](admitErr)
+	}
+	defer finish()
+
 	if in.Schema == "" || in.Name == "" {
 		return fail[db.ObjectDetails](fmt.Errorf("schema and name are required"))
 	}
@@ -119,5 +147,8 @@ func (s *server) objectDetails(ctx context.Context, _ *mcp.CallToolRequest, in O
 		details.Indexes = []db.Index{}
 	}
 	s.Logger.DebugContext(ctx, "get_object_details ok", "object", ref.String(), "columns", len(details.Columns), "duration", time.Since(start).String())
+	if err := finish(); err != nil {
+		return fail[db.ObjectDetails](err)
+	}
 	return nil, *details, nil
 }

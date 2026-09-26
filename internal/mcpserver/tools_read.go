@@ -15,22 +15,31 @@ import (
 
 // ExecuteReadInput is the input of execute_sql_readonly.
 type ExecuteReadInput struct {
-	SQL     string `json:"sql" jsonschema:"one SELECT-like statement over allowlisted tables"`
+	SQL     string `json:"sql" jsonschema:"one SELECT-like statement over permitted tables and columns"`
 	MaxRows int    `json:"max_rows,omitempty" jsonschema:"maximum rows to return; capped by the server limit"`
 }
 
 func (s *server) registerReadTools(srv *mcp.Server) {
+	description := "Run a single read-only SQL statement (SELECT, WITH, UNION, joins, aggregates, window functions) " +
+		"against the allowlisted tables and return rows. Only tables in the read allowlist may appear anywhere in " +
+		"the query, including subqueries and CTEs. Only a fixed set of builtin functions is permitted. Rows are capped by max_rows."
+	if s.Policy.AnnotationMode() {
+		description = "Query selectable columns discovered through get_object_details. Every column use, including filters, joins and ordering, must be permitted. Use explicit projections; wildcards and whole rows are rejected. Built-in count(*) is allowed only on tables with a selectable column. Only approved built-in functions are permitted. Rows are capped by max_rows."
+	}
 	mcp.AddTool(srv, &mcp.Tool{
-		Name: "execute_sql_readonly",
-		Description: "Run a single read-only SQL statement (SELECT, WITH, UNION, joins, aggregates, window functions) " +
-			"against the allowlisted tables and return rows. Only tables in the read allowlist may appear anywhere in " +
-			"the query, including subqueries and CTEs. Only a fixed set of builtin functions is permitted. Rows are " +
-			"capped by max_rows.",
+		Name:        "execute_sql_readonly",
+		Description: description,
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.executeReadonly)
 }
 
 func (s *server) executeReadonly(ctx context.Context, _ *mcp.CallToolRequest, in ExecuteReadInput) (*mcp.CallToolResult, QueryOutput, error) {
+	s, ctx, finish, admitErr := s.admitted(ctx)
+	if admitErr != nil {
+		return fail[QueryOutput](admitErr)
+	}
+	defer finish()
+
 	const tool = "execute_sql_readonly"
 	checked, err := s.check(ctx, tool, in.SQL, sqlguard.ModeRead)
 	if err != nil {
@@ -47,6 +56,9 @@ func (s *server) executeReadonly(ctx context.Context, _ *mcp.CallToolRequest, in
 	}
 	s.Logger.DebugContext(ctx, "query ok", "tool", tool, "canonical_sql", checked.SQL, "duration", time.Since(start).String(),
 		"rows", len(res.Rows), "truncated", res.Truncated, "max_rows", maxRows)
+	if err := finish(); err != nil {
+		return fail[QueryOutput](err)
+	}
 	return nil, queryOutput(res), nil
 }
 
@@ -84,6 +96,12 @@ func (s *server) registerExplainTool(srv *mcp.Server) {
 }
 
 func (s *server) explain(ctx context.Context, _ *mcp.CallToolRequest, in ExplainInput) (*mcp.CallToolResult, ExplainOutput, error) {
+	s, ctx, finish, admitErr := s.admitted(ctx)
+	if admitErr != nil {
+		return fail[ExplainOutput](admitErr)
+	}
+	defer finish()
+
 	const tool = "explain_query"
 	checked, err := s.check(ctx, tool, in.SQL, sqlguard.ModeRead)
 	if err != nil {
@@ -127,6 +145,9 @@ func (s *server) explain(ctx context.Context, _ *mcp.CallToolRequest, in Explain
 	} else if in.Analyze {
 		out.Notes = "statement was executed inside a read-only transaction to collect actual timings"
 	}
+	if err := finish(); err != nil {
+		return fail[ExplainOutput](err)
+	}
 	return nil, out, nil
 }
 
@@ -141,6 +162,11 @@ func (s *server) hypotheticalIndex(h HypotheticalIndexInput) (sqlguard.Hypotheti
 	}
 	if !s.Policy.CanRead(ref) {
 		return sqlguard.HypotheticalIndex{}, sqlguard.Reject("hypothetical index table is not in the read allowlist", ref.String())
+	}
+	for _, column := range h.Columns {
+		if s.Policy.AnnotationMode() && !s.Policy.CanReadColumn(ref, column) {
+			return sqlguard.HypotheticalIndex{}, sqlguard.Reject(s.Policy.ColumnDenial(ref, column), ref.String()+"."+column)
+		}
 	}
 	idx := sqlguard.HypotheticalIndex{Table: ref, Columns: h.Columns, Method: h.Method}
 	if _, err := sqlguard.BuildIndexDDL(idx); err != nil {

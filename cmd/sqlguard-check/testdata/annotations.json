@@ -1,0 +1,15 @@
+{
+  "schemas": ["app"],
+  "builtin_functions": {"count": "count", "sum": "sum", "arrayMap": "arrayMap"},
+  "case_insensitive_functions": {"count": "count", "sum": "sum"},
+  "relations": [{
+    "ref": {"schema": "app", "name": "messages"},
+    "identity": "fixture:messages",
+    "kind": "table",
+    "columns": [
+      {"name": "id", "position": 1, "identity": "fixture:1", "type": "Nullable(UInt64)", "nullable": true, "tier": "safe", "annotation_status": "valid"},
+      {"name": "body", "position": 2, "identity": "fixture:2", "type": "String", "tier": "content", "annotation_status": "valid"},
+      {"name": "email", "position": 3, "identity": "fixture:3", "type": "String", "tier": "pii", "annotation_status": "valid"}
+    ]
+  }]
+}

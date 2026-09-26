@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -23,6 +24,8 @@ func main() {
 	writeTables := fs.String("write-tables", "", "comma-separated write allowlist")
 	modeFlag := fs.String("mode", "read", "read|write")
 	columns := fs.String("columns", "", "catalog columns as table=col1,col2;table2=col1 (postgres qualified column resolution)")
+	tiers := fs.String("tiers", "", "annotation tiers: safe or safe,pii; columns must be table=column:tier,...")
+	catalogPath := fs.String("catalog", "", "JSON policy.Catalog snapshot, including built-in functions for ClickHouse")
 	verbose := fs.Bool("v", false, "debug logging to stderr")
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "usage: sqlguard-check [flags] <sql>\n")
@@ -66,6 +69,50 @@ func main() {
 		fatal(err)
 	}
 	pol.SetColumns(cols)
+	if *tiers != "" {
+		if *readTables != "" || *writeTables != "" || *modeFlag != "read" {
+			fatal(fmt.Errorf("annotation diagnostics require read mode without static table lists"))
+		}
+		pol.AnnotationTiers = map[policy.Tier]bool{}
+		for _, tier := range strings.Split(*tiers, ",") {
+			t := policy.Tier(strings.TrimSpace(tier))
+			if t != policy.Safe && t != policy.PII {
+				fatal(fmt.Errorf("only safe and pii may be selected"))
+			}
+			pol.AnnotationTiers[t] = true
+		}
+		catalog := &policy.Catalog{}
+		if *catalogPath != "" {
+			raw, err := os.ReadFile(*catalogPath)
+			if err != nil {
+				fatal(err)
+			}
+			if err := json.Unmarshal(raw, catalog); err != nil {
+				fatal(err)
+			}
+		} else {
+			for ref, names := range cols {
+				r := policy.Relation{Ref: ref, Kind: "table", Identity: ref.String()}
+				for i, spec := range names {
+					name, tier, ok := strings.Cut(spec, ":")
+					col := policy.CatalogColumn{Name: name, Position: i + 1, Identity: ref.String() + "." + name}
+					if ok {
+						policy.Annotate(&col, "@access: "+tier)
+					} else {
+						policy.Annotate(&col, "")
+					}
+					r.Columns = append(r.Columns, col)
+				}
+				catalog.Relations = append(catalog.Relations, r)
+			}
+		}
+		if err := catalog.Seal(); err != nil {
+			fatal(err)
+		}
+		pol = pol.WithCatalog(catalog)
+	} else if *catalogPath != "" {
+		fatal(fmt.Errorf("--catalog requires --tiers"))
+	}
 
 	mode := sqlguard.ModeRead
 	switch *modeFlag {
@@ -96,6 +143,9 @@ func main() {
 		names[i] = t.String()
 	}
 	fmt.Printf("OK %s tables=[%s]\n%s\n", checked.Kind, strings.Join(names, " "), checked.SQL)
+	if pol.AnnotationMode() {
+		fmt.Printf("catalog=%s columns=%v\n", checked.Generation, checked.Columns)
+	}
 }
 
 func fill(set map[policy.TableRef]struct{}, list, defaultSchema string, d policy.Dialect) error {

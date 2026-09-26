@@ -8,7 +8,7 @@ export E2E_CH_HTTP_PORT ?= 58123
 COMPOSE := docker compose -f e2e/docker-compose.yml
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: build vet e2e-up e2e-down e2e e2e-pg e2e-ch
+.PHONY: build vet test e2e-up e2e-down e2e e2e-pg e2e-ch e2e-annotations
 
 build:
 	CGO_ENABLED=1 go build -trimpath -ldflags "-X main.version=$(VERSION)" -o bin/restrictedsql-mcp ./cmd/restrictedsql-mcp
@@ -16,6 +16,9 @@ build:
 vet:
 	gofmt -l . | tee /dev/stderr | test -z "$$(cat)"
 	go vet ./...
+
+test:
+	go test ./internal/... ./cmd/...
 
 e2e-up:
 	$(COMPOSE) up -d --build --wait
@@ -33,3 +36,6 @@ e2e-pg: e2e-up
 
 e2e-ch: e2e-up
 	E2E=1 go test ./e2e/... -count=1 -v -timeout 20m -run 'ClickHouse|Common'
+
+e2e-annotations: e2e-up
+	E2E=1 go test ./e2e/... -count=1 -v -timeout 20m -run Annotations

@@ -5,6 +5,7 @@ package chguard
 import (
 	"fmt"
 	"log/slog"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -33,6 +34,9 @@ func (guard) Check(raw string, mode sqlguard.Mode, pol *policy.Policy) (checked 
 	if mode != sqlguard.ModeRead {
 		return nil, sqlguard.Reject("write mode is not supported on clickhouse", "")
 	}
+	if pol.AnnotationMode() && (len(raw) > 64<<10 || strings.IndexByte(raw, 0) >= 0) {
+		return nil, sqlguard.Reject("statement is too long or contains a NUL byte", "")
+	}
 	if strings.TrimSpace(raw) == "" {
 		return nil, sqlguard.Reject("empty statement", "")
 	}
@@ -51,15 +55,45 @@ func (guard) Check(raw string, mode sqlguard.Mode, pol *policy.Policy) (checked 
 	if !ok {
 		return nil, sqlguard.Reject("only SELECT statements are allowed", nodeName(stmts[0]))
 	}
+	var columns map[policy.TableRef][]string
+	if pol.AnnotationMode() {
+		columns, err = bindCHAnnotations(sel, pol)
+		if err != nil {
+			return nil, err
+		}
+	}
 	v := &visitor{pol: pol, tables: map[policy.TableRef]struct{}{}}
 	if err := v.selectQuery(sel); err != nil {
 		log.Debug("rejected", "error", err.Error())
 		return nil, err
 	}
 	checked = &sqlguard.Checked{
-		SQL:    parser.Format(sel),
-		Kind:   sqlguard.KindSelect,
-		Tables: v.sortedTables(),
+		SQL:     parser.Format(sel),
+		Columns: columns,
+		Kind:    sqlguard.KindSelect,
+		Tables:  v.sortedTables(),
+	}
+	if pol.Catalog != nil {
+		checked.Generation = pol.Catalog.Digest
+		canonical, parseErr := parser.NewParser(checked.SQL).ParseStmts()
+		if parseErr != nil || len(canonical) != 1 {
+			return nil, sqlguard.Reject("canonical form failed re-validation", "")
+		}
+		selectAgain, ok := canonical[0].(*parser.SelectQuery)
+		if !ok {
+			return nil, sqlguard.Reject("canonical statement changed kind", "")
+		}
+		columnsAgain, bindErr := bindCHAnnotations(selectAgain, pol)
+		if bindErr != nil {
+			return nil, sqlguard.Reject("canonical form failed re-validation", bindErr.Error())
+		}
+		again := &visitor{pol: pol, tables: map[policy.TableRef]struct{}{}}
+		if err := again.selectQuery(selectAgain); err != nil {
+			return nil, sqlguard.Reject("canonical form failed re-validation", err.Error())
+		}
+		if !reflect.DeepEqual(checked.Columns, columnsAgain) || !reflect.DeepEqual(checked.Tables, again.sortedTables()) {
+			return nil, sqlguard.Reject("canonical permission references changed", "")
+		}
 	}
 	log.Debug("accepted", "canonical_sql", checked.SQL, "tables", refStrings(checked.Tables))
 	return checked, nil

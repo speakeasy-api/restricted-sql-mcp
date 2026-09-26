@@ -128,6 +128,13 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 		cancel()
 	}
 
+	if annotation, ok := backend.(*dbsec.AnnotationGate); ok {
+		if err := annotation.Refresh(ctx); err != nil {
+			logger.Warn("annotation mode unavailable at boot", "error", err)
+		}
+		go annotation.Run(ctx, cfg.AnnotationRefreshInterval)
+	}
+
 	if cfg.Transport == "stdio" {
 		logger.Info("stdio transport selected; /healthz and /readyz are not available")
 		if cfg.Tunnel {
@@ -251,6 +258,32 @@ func localMCPURL(listen string) string {
 // connection-level security the backend is a dbsec.Gate that provisions the
 // restricted roles first and then opens pools as those roles.
 func selectDialect(ctx context.Context, cfg *config.Config, pol *policy.Policy, logger *slog.Logger) (db.Backend, sqlguard.Guard, error) {
+	if pol.AnnotationMode() {
+		prefix, err := dbsec.AnnotationRolePrefix(cfg.SecurityRolePrefix)
+		if err != nil {
+			return nil, nil, err
+		}
+		var source dbsec.AnnotationSource
+		var guard sqlguard.Guard
+		var build dbsec.AnnotationBuilder
+		switch pol.Dialect {
+		case policy.Postgres:
+			source = &dbsec.PostgresAnnotations{DSN: cfg.DSN, Prefix: prefix, Logger: logger}
+			guard = pgguard.NewWithLogger(logger)
+			build = func(ctx context.Context, creds dbsec.Creds, p *policy.Policy) (db.Backend, error) {
+				return pgbackend.New(ctx, creds.ReadDSN, p, logger)
+			}
+		case policy.ClickHouse:
+			source = &dbsec.ClickHouseAnnotations{DSN: cfg.DSN, Prefix: prefix, Logger: logger}
+			guard = chguard.New()
+			build = func(ctx context.Context, creds dbsec.Creds, p *policy.Policy) (db.Backend, error) {
+				return chbackend.New(ctx, creds.ReadDSN, p, logger)
+			}
+		default:
+			return nil, nil, fmt.Errorf("unsupported annotation dialect")
+		}
+		return dbsec.NewAnnotationGate(pol, source, build, cfg.AnnotationRefreshTimeout, logger), guard, nil
+	}
 	switch pol.Dialect {
 	case policy.Postgres:
 		guard := pgguard.NewWithLogger(logger)

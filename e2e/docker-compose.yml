@@ -17,7 +17,7 @@ services:
       retries: 30
 
   clickhouse:
-    image: clickhouse/clickhouse-server:25.8
+    image: clickhouse/clickhouse-server:${E2E_CH_VERSION:-25.8}
     environment:
       CLICKHOUSE_DB: app
       CLICKHOUSE_USER: default

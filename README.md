@@ -1,7 +1,8 @@
 # restrictedsql-mcp
 
 An MCP server that gives an agent SQL access to a Postgres or ClickHouse database,
-restricted to an explicit allowlist of tables and a safe subset of SQL. Every
+restricted by either an explicit table allowlist or per-column access annotations,
+and a safe subset of SQL. Every
 statement is parsed into an AST, validated against the policy, and re-serialized
 from the AST. The database only ever receives that canonical form, never the raw
 input.
@@ -32,6 +33,11 @@ and run every tool call as those roles (see below). Without the flag, point the
 DSN at such a role yourself. Either way the server does not depend on it, but it
 makes a bug in the guard non-fatal.
 
+Column annotation mode requires this second layer. It grants only selected
+columns, validates every column use, and serves structural metadata for all
+application tables, including denied ones. See [column access](docs/column-access.md)
+for the supported SQL surface and required migration procedure.
+
 The full policy is in `docs/superpowers/specs/2026-09-14-restricted-sql-mcp-design.md`.
 
 ## Running
@@ -40,7 +46,11 @@ The full policy is in `docs/superpowers/specs/2026-09-14-restricted-sql-mcp-desi
 restrictedsql-mcp \
   --dialect postgres|clickhouse          (required)
   --dsn <url>                            (or env DATABASE_URL; required)
-  --read-tables schema.t1,schema.t2      (required, at least one)
+  --read-tables schema.t1,schema.t2      (required in static table mode)
+  --columns-from-annotations safe        (alternative to read-tables; safe and/or pii;
+                                          requires connection-level-security; read-only)
+  --annotation-refresh-interval 30s      (annotation catalog/grant refresh; HTTP and stdio)
+  --annotation-refresh-timeout 10s       (bounds refresh and active-query draining)
   --write-tables schema.t3               (optional; used only with write tools)
   --dangerously-add-write-tools          (registers the 4 write tools; Postgres only)
   --default-schema public                (schema for unqualified names;
@@ -58,7 +68,8 @@ restrictedsql-mcp \
   --connection-level-security            (treat the DSN as a bootstrap connection, provision
                                           least-privilege roles and run tool traffic as them;
                                           see "Connection-level security")
-  --security-role-prefix restrictedsql   (name prefix of the provisioned roles: <prefix>_ro, <prefix>_rw)
+  --security-role-prefix restrictedsql   (static roles: <prefix>_ro, <prefix>_rw;
+                                          annotation mode adds a random process suffix)
   --log-level info|debug
 ```
 
@@ -79,8 +90,29 @@ Boot semantics:
   protocol). At `debug` they include raw and canonical SQL, referenced tables,
   rejection reasons, timings, and transaction lifecycle events. The DSN is never
   logged.
+- In annotation mode, readiness refreshes the catalog and verifies exact column
+  grants. A failed refresh closes tool admission, including existing MCP
+  sessions. Periodic refresh also runs without readiness probes. An empty set
+  of selectable columns is valid: metadata remains available, data is denied.
+
+Example annotation deployment (the bootstrap DSN is supplied in `DATABASE_URL`):
+
+```sh
+restrictedsql-mcp --dialect postgres \
+  --columns-from-annotations safe --connection-level-security
+```
+
+Use `safe,pii` only when the deployment should expose reviewed identity columns.
+`content`, `secret`, and `restricted` cannot be selected. Missing or malformed
+column comments deny access. Existing `--read-tables` deployments keep their
+current behavior.
 
 ## Connection-level security
+
+The details below describe **static table mode**. Annotation mode uses separate
+process-specific roles, exact column grants, effective-grant audits (including
+PostgreSQL `PUBLIC`), and coordinated refresh. Its bootstrap requirements and
+role lifecycle are documented in [column access](docs/column-access.md).
 
 `--connection-level-security` adds a second enforcement layer inside the database
 itself. The DSN becomes a **bootstrap** connection used only to provision roles;
@@ -172,6 +204,13 @@ Returns columns (name, type, nullable, default, description), constraints,
 indexes, size, row estimate, description, and on ClickHouse the engine, sorting
 key, and partition key.
 
+In annotation mode, metadata comes from the catalog snapshot. Objects include
+`access` with queryability, selectable columns and generation; columns include
+tier, annotation status, selectability and denial reason. Discovery includes
+closed application tables. Raw comments, defaults, index expressions and engine
+connection definitions are omitted; PostgreSQL foreign-key relationships remain
+available as structured column references.
+
 **`explain_query`** — `{ "sql": string, "analyze"?: bool, "hypothetical_indexes"?: [{ "schema"?, "table", "columns": [string], "method"?: "btree"|"hash"|"gin"|"gist"|"brin" }] }`
 The SQL goes through the same read-mode guard. Postgres runs
 `EXPLAIN (FORMAT JSON, VERBOSE, COSTS[, ANALYZE, BUFFERS])` in a read-only
@@ -229,17 +268,28 @@ Requirements: Go 1.27, a C compiler (cgo for `pg_query_go`), Docker with Compose
 ```
 make build      # bin/restrictedsql-mcp
 make vet        # gofmt + go vet
+make test       # policy, admission, and SQL-binding tests
 make e2e-up     # start the shared Postgres (with hypopg) and ClickHouse stack
 make e2e        # e2e-up, then E2E=1 go test ./e2e/...
 make e2e-pg     # only Postgres and common suites
 make e2e-ch     # only ClickHouse and common suites
+make e2e-annotations # column access, grants, reload, and migration suites
 ```
 
-There are no unit tests. The e2e suite builds the real binary once, boots it as a
+Unit tests cover annotation parsing, binding, canonicalization, expansion limits,
+and admission invalidation under refresh failures. Run them with the race
+detector using `go test -race ./internal/... ./cmd/...`.
+
+The e2e suite builds the real binary once, boots it as a
 subprocess per test with the flags under test, waits for `/readyz`, and drives it
 with the go-sdk MCP client over Streamable HTTP. Subprocess logs (debug level) are
 printed on failure. Without `E2E=1` the package exits immediately so
 `go test ./...` stays fast.
+
+Annotation fixtures contain synthetic safe, PII, content, secret, restricted and
+unannotated values. Tests cover both HTTP and stdio, hidden inputs in SQL clauses,
+direct restricted credentials, schema changes, canceled in-flight results,
+unsupported dependencies, and the existing SQL bypass corpus.
 
 The compose stack binds Postgres to `127.0.0.1:55433` (55432 is often taken by
 other local databases) and ClickHouse to `127.0.0.1:59000` (native) and
@@ -247,6 +297,10 @@ other local databases) and ClickHouse to `127.0.0.1:59000` (native) and
 `E2E_CH_HTTP_PORT`, or point the tests at other databases with `E2E_PG_DSN` and
 `E2E_CH_DSN`. The stack is shared between parallel work streams; `make e2e-down`
 tears it down and should be run deliberately.
+
+`E2E_CH_VERSION` selects the Compose ClickHouse image (default `25.8`). Column
+access is also tested against Gram's pinned `26.2.19.43`; use a separate Compose
+project and ports when running that version beside the shared stack.
 
 ## Deployment
 

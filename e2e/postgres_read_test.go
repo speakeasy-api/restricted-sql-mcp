@@ -85,7 +85,9 @@ func TestPostgresReadWindowAndCTE(t *testing.T) {
 }
 
 func TestPostgresReadValueTypes(t *testing.T) {
-	s := bootServer(t, ServerOpts{})
+	// pgx decodes timestamptz in the process timezone; the fixture's exact
+	// serialization assertions use UTC regardless of the developer's timezone.
+	s := bootServer(t, ServerOpts{Env: []string{"TZ=UTC"}})
 	out := s.mustCall(t, "execute_sql_readonly", map[string]any{"sql": `
 		SELECT id, amount, created_at, status, amount::float8 AS f, NULL::text AS n,
 		       ARRAY[1, 2] AS arr, '{"a":1}'::jsonb AS j, created_at::date AS d, true AS b

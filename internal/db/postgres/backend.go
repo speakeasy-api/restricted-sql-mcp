@@ -131,6 +131,9 @@ func newPool(ctx context.Context, dsn string, o options) (*pgxpool.Pool, error) 
 // into the policy. Relations that do not exist are simply absent from the
 // snapshot, so qualified references to them fail closed in the guard.
 func (b *Backend) RefreshColumns(ctx context.Context) error {
+	if b.pol.AnnotationMode() {
+		return nil
+	}
 	refs := b.pol.AllTables()
 	schemas := make([]string, len(refs))
 	names := make([]string, len(refs))
@@ -258,7 +261,11 @@ func applySessionSettings(ctx context.Context, tx execer, pol *policy.Policy) er
 			return fmt.Errorf("set statement_timeout: %w", err)
 		}
 	}
-	stmt := "SET LOCAL search_path = " + pgx.Identifier{pol.DefaultSchema}.Sanitize()
+	schema := pol.DefaultSchema
+	if pol.AnnotationMode() {
+		schema = "pg_catalog"
+	}
+	stmt := "SET LOCAL search_path = " + pgx.Identifier{schema}.Sanitize()
 	if _, err := tx.Exec(ctx, stmt); err != nil {
 		return fmt.Errorf("set search_path: %w", err)
 	}

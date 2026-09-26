@@ -16,22 +16,25 @@ import (
 
 // Config is the resolved boot configuration.
 type Config struct {
-	Dialect          policy.Dialect
-	DSN              string
-	ReadTables       []string
-	WriteTables      []string
-	WritesEnabled    bool
-	DefaultSchema    string
-	Transport        string // "http" | "stdio"
-	Listen           string // "127.0.0.1:8080"
-	MaxRows          int
-	StatementTimeout time.Duration
-	TxnIdleTimeout   time.Duration
-	MaxOpenTxns      int
-	Tunnel           bool
-	TunnelOnly       bool
-	LogLevel         string
-	Version          string
+	Dialect                   policy.Dialect
+	DSN                       string
+	AnnotationTiers           []string
+	AnnotationRefreshInterval time.Duration
+	AnnotationRefreshTimeout  time.Duration
+	ReadTables                []string
+	WriteTables               []string
+	WritesEnabled             bool
+	DefaultSchema             string
+	Transport                 string // "http" | "stdio"
+	Listen                    string // "127.0.0.1:8080"
+	MaxRows                   int
+	StatementTimeout          time.Duration
+	TxnIdleTimeout            time.Duration
+	MaxOpenTxns               int
+	Tunnel                    bool
+	TunnelOnly                bool
+	LogLevel                  string
+	Version                   string
 
 	// ConnectionLevelSecurity treats the DSN as a bootstrap connection used
 	// to provision least-privilege database roles; tool traffic then runs as
@@ -60,10 +63,13 @@ var ErrHelp = flag.ErrHelp
 func ParseFlags(args []string, getenv func(string) string, version string) (*Config, error) {
 	c := &Config{Version: version}
 	fs := flag.NewFlagSet("restrictedsql-mcp", flag.ContinueOnError)
-	var dialect, readTables, writeTables string
+	var dialect, readTables, writeTables, annotationTiers string
 	fs.StringVar(&dialect, "dialect", "", "database dialect: postgres|clickhouse (required)")
 	fs.StringVar(&c.DSN, "dsn", "", "database connection URL (or env DATABASE_URL; required)")
-	fs.StringVar(&readTables, "read-tables", "", "comma-separated tables readable by the read tools, e.g. schema.t1,schema.t2 (required)")
+	fs.StringVar(&readTables, "read-tables", "", "comma-separated tables readable by the read tools (required unless using columns-from-annotations)")
+	fs.StringVar(&annotationTiers, "columns-from-annotations", "", "read explicitly annotated columns in selected tiers: safe or safe,pii (requires connection-level-security)")
+	fs.DurationVar(&c.AnnotationRefreshInterval, "annotation-refresh-interval", 30*time.Second, "periodic catalog and column-grant refresh interval")
+	fs.DurationVar(&c.AnnotationRefreshTimeout, "annotation-refresh-timeout", 10*time.Second, "maximum catalog/grant refresh and drain duration")
 	fs.StringVar(&writeTables, "write-tables", "", "comma-separated tables writable by the write tools (optional)")
 	fs.BoolVar(&c.WritesEnabled, "dangerously-add-write-tools", false, "register the begin/execute/commit/rollback write tools (Postgres only)")
 	fs.StringVar(&c.DefaultSchema, "default-schema", "", "schema used to resolve unqualified table names (postgres: public; clickhouse: database from DSN, else default)")
@@ -87,6 +93,16 @@ func ParseFlags(args []string, getenv func(string) string, version string) (*Con
 
 	c.Dialect = policy.Dialect(strings.ToLower(strings.TrimSpace(dialect)))
 	c.ReadTables = splitList(readTables)
+	c.AnnotationTiers = splitList(annotationTiers)
+	annotationSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "columns-from-annotations" {
+			annotationSet = true
+		}
+	})
+	if annotationSet && len(c.AnnotationTiers) == 0 {
+		return nil, errors.New("--columns-from-annotations requires safe and/or pii")
+	}
 	c.WriteTables = splitList(writeTables)
 	if c.DSN == "" {
 		c.DSN = getenv("DATABASE_URL")
@@ -116,7 +132,26 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.DSN) == "" {
 		return errors.New("--dsn or DATABASE_URL is required")
 	}
-	if len(c.ReadTables) == 0 {
+	if len(c.AnnotationTiers) > 0 {
+		for _, tier := range c.AnnotationTiers {
+			if tier != "safe" && tier != "pii" {
+				return errors.New("--columns-from-annotations only permits safe and pii")
+			}
+		}
+		if len(c.ReadTables) > 0 {
+			return errors.New("--columns-from-annotations and --read-tables are mutually exclusive")
+		}
+		if c.WritesEnabled || len(c.WriteTables) > 0 {
+			return errors.New("annotation mode is read-only; write flags are not supported")
+		}
+		if !c.ConnectionLevelSecurity {
+			return errors.New("--columns-from-annotations requires --connection-level-security")
+		}
+		if c.AnnotationRefreshInterval <= 0 || c.AnnotationRefreshTimeout <= 0 {
+			return errors.New("annotation refresh durations must be positive")
+		}
+	}
+	if len(c.ReadTables) == 0 && len(c.AnnotationTiers) == 0 {
 		return errors.New("--read-tables is required (at least one table)")
 	}
 	if c.DefaultSchema == "" {
@@ -200,6 +235,12 @@ func (c *Config) BuildPolicy() (*policy.Policy, error) {
 		WritesEnabled:    c.WritesEnabled,
 		MaxRows:          c.MaxRows,
 		StatementTimeout: c.StatementTimeout,
+	}
+	for _, tier := range c.AnnotationTiers {
+		if p.AnnotationTiers == nil {
+			p.AnnotationTiers = map[policy.Tier]bool{}
+		}
+		p.AnnotationTiers[policy.Tier(tier)] = true
 	}
 	for _, t := range c.ReadTables {
 		ref, err := policy.ParseTableRef(t, c.DefaultSchema, c.Dialect)

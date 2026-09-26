@@ -6,6 +6,7 @@ package pgguard
 import (
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -65,7 +66,7 @@ func (g guard) Check(raw string, mode sqlguard.Mode, pol *policy.Policy) (*sqlgu
 		log.Debug("guard.revalidation_failed", "canonical_sql", checked.SQL, "error", err.Error())
 		return nil, sqlguard.Reject("canonical form failed re-validation", err.Error())
 	}
-	if !sameTables(checked.Tables, again.Tables) || again.Kind != checked.Kind {
+	if !sameTables(checked.Tables, again.Tables) || again.Kind != checked.Kind || !reflect.DeepEqual(checked.Columns, again.Columns) {
 		log.Debug("guard.revalidation_mismatch", "canonical_sql", checked.SQL, "tables", checked.Tables, "tables_again", again.Tables)
 		return nil, sqlguard.Reject("canonical form re-validation mismatch", "")
 	}
@@ -102,6 +103,16 @@ func check(raw string, mode sqlguard.Mode, pol *policy.Policy) (*sqlguard.Checke
 		return nil, sqlguard.Reject("empty statement", "")
 	}
 
+	var columns map[policy.TableRef][]string
+	if pol.AnnotationMode() {
+		if mode != sqlguard.ModeRead {
+			return nil, sqlguard.Reject("annotation mode is read-only", "")
+		}
+		columns, err = bindAnnotationColumns(stmt, pol)
+		if err != nil {
+			return nil, err
+		}
+	}
 	v := newVisitCtx(mode, pol)
 	kind, err := v.walkTop(stmt)
 	if err != nil {
@@ -118,7 +129,11 @@ func check(raw string, mode sqlguard.Mode, pol *policy.Policy) (*sqlguard.Checke
 		tables = append(tables, t)
 	}
 	sort.Slice(tables, func(i, j int) bool { return tables[i].String() < tables[j].String() })
-	return &sqlguard.Checked{SQL: canonical, Kind: kind, Tables: tables}, nil
+	generation := ""
+	if pol.Catalog != nil {
+		generation = pol.Catalog.Digest
+	}
+	return &sqlguard.Checked{SQL: canonical, Kind: kind, Tables: tables, Columns: columns, Generation: generation}, nil
 }
 
 // rejectTrailingContent rejects anything after the statement terminator other

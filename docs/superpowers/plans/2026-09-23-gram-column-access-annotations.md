@@ -1,437 +1,426 @@
-# Gram column access annotations — plan (v2, column-level)
+# Gram column access annotations — validated plan (v3)
 
-Date: 2026-09-23 (supersedes the 2026-09-21 table-level draft)
-Repos: `speakeasy-api/gram` (annotations, generator, lint, export) and
-`speakeasy-api/gram-restricted-sql-mcp` (reads annotations, enforces columns).
+Supersedes the 2026-09-21 table-level draft and the unvalidated v2 column draft.
+Repos: `speakeasy-api/gram` (annotations, lint, export) and
+`speakeasy-api/gram-restricted-sql-mcp` (catalog snapshots and enforcement).
 
-## Goal
+Status: the restricted-sql-mcp runtime and e2e implementation is now present;
+Gram's application annotations, inventory, migrations, lint and rollout remain
+separate work. See [the runtime guide](../../column-access.md) for the implemented
+surface and operational requirements.
+Implementation and test evidence are recorded in
+[the implementation report](../reports/column-access-implementation.md).
+Codex validation, probes, and remaining implementation checks are recorded in
+[the validation report](../reports/gram-column-access-plan-validation.md).
+The Gram schema and migration tasks were inspected at
+`55298d2bfef31ee337e6f5281f00359a1e109a7f`; rebase classifications against the
+actual implementation revision. That snapshot has 227 Postgres CREATE objects,
+40 ClickHouse schema objects (including 9 materialized views), and one additional
+object in `server/clickhouse/mart.sql`.
 
-Access is decided per **column**, never per table. Every column of every
-table and view in gram carries an access tier next to its definition, migrated
-with the schema, readable live from the database. The MCP server exposes only
-columns whose tier is selected at boot, rejects every wildcard, and resolves
-every column reference before the statement can run. Schema metadata (which
-tables and columns exist, their types, tiers) is readable globally.
+## Goal and security contract
 
-Consequences:
-- A migration that adds a PHI column to a previously safe table cannot leak it:
-  the column has no annotation, so it is not in the allowed set (runtime,
-  fail closed) and CI refuses the migration until it is annotated (lint).
-- Tables that were "content" or "secret" become partially usable:
-  `SELECT count(*), date_trunc('day', created_at) FROM chat_messages GROUP BY 2`
-  works because `id`, `chat_id`, `project_id`, `created_at`, token counts are
-  `safe`; `content` is not selectable.
-- Views are no longer needed to carve out subsets; they remain useful only for
-  derived shapes.
+Every application column has an explicit access annotation. The server snapshots
+column identities and permissions, and accepts SQL only when every referenced
+column is permitted. Adding a column never grants access by inheritance.
+Schema discovery remains global through dedicated metadata tools.
 
-## Options considered
+- Default tier selection: `safe`. Gram can opt into `safe,pii` to include reviewed
+  identity fields such as email. This does not include PHI or arbitrary personal
+  data merely because the deployment opted into email.
+- Unknown, missing, invalid, duplicate, or unselected annotations deny access.
+  No table, schema, or database default can promote a new column to `safe`.
+- Check all uses of a column: projection, predicates, joins, grouping, ordering,
+  aggregate arguments/filters, windows, subqueries, and expressions. A query
+  returning only a count must not filter on a forbidden column.
+- Reject projection wildcards, whole rows, implicit column sets, and constructs
+  whose binding cannot be proved. Permit only the built-in row-count exception
+  `count(*)` (and ClickHouse `count()`). `count(secret)` remains forbidden.
+- `SELECT count(*) FROM chat_messages` can work with a reviewed safe `id` grant,
+  while message bodies stay inaccessible. Relations with no permitted columns
+  remain discoverable but cannot be queried, even for counts or `SELECT 1`.
+  A count-only permission for completely closed relations is a separate feature;
+  do not manufacture a safe column or a table-wide grant to enable it.
+- The promise concerns SQL access and data returned to the client. It is not a
+  promise that database storage reads never touch a page containing other data.
+  Counts and existence reveal row cardinality; they are intentionally allowed
+  on queryable relations, without hidden-column predicates.
 
-Where the annotation lives — unchanged from v1: **structured comments**
-(`COMMENT ON COLUMN` in Postgres, inline `COMMENT` in ClickHouse). Gram is
-Atlas-declarative (`server/database/schema.sql`, `server/clickhouse/schema.sql`
-are the source of truth; `mise run db:diff` / `mise run clickhouse:diff`
-generate migrations), Atlas diffs comments, and both schemas already use column
-comments (71 Postgres, 465 ClickHouse). A registry table would put ~3,000 rows
-outside the declarative flow with no link to the column they describe.
+The annotation deployment requires connection-level column grants as well as the
+AST guard. The bootstrap credential is never used for caller-supplied queries.
+The existing static `--read-tables` mode retains its current behavior.
 
-Granularity — **column-level with no inheritance**. A table-level annotation
-was considered as a default for unannotated columns; rejected because a new
-column would inherit `safe`, which is exactly the migration hazard to close.
-Table comments stay free prose (no `@access:` line at table level; the lint
-rejects one there to avoid two sources of truth).
+## Format and annotation decisions
 
-Wildcards — **rejected outright** (`*`, `t.*`, whole-row references
-`to_json(t)` / `SELECT t FROM t`, `RETURNING *`, `NATURAL JOIN`, `SELECT`
-without a target list). Expanding `*` to the allowed columns was considered;
-rejected because a query's meaning would then change silently when tiers
-change, and because the DB-level grants reject `*` anyway.
+Append one final line to each column's existing comment:
 
-## Annotation format
-
-One trailing line inside every column comment:
-
+```text
+@access: safe
 ```
-@access: <tier>
-```
 
-Regex: `(?m)^@access:\s*(safe|pii|content|secret)\s*$`, exactly one match per
-column. Prose above it is optional. Table comments carry no `@access:` line.
-
-| Tier | Meaning | Selectable by default |
+| Tier | Meaning | Runtime selection |
 |---|---|---|
-| `safe` | ids, foreign keys, timestamps, status/enum, counts, sizes, org/project/config values, org-authored configuration text | yes |
-| `pii` | user identity: email, name, phone, device owner, IP, external user ids that map to a person | opt-in |
-| `content` | user or LLM message content and anything derived from it: bodies, summaries, embeddings, spans, telemetry bodies, tool inputs/outputs | never |
-| `secret` | credentials, tokens, keys, cookies, signed or encrypted material, hashes of any of those | never |
+| `safe` | Reviewed organizational/operational metadata | Default |
+| `pii` | Reviewed identity/contact data, such as email or name | Explicit opt-in |
+| `content` | User/LLM content and derivatives: messages, summaries, embeddings, tool inputs/outputs | Never |
+| `secret` | Credentials, tokens, keys, cookies, hashes/encrypted credentials | Never |
+| `restricted` | Other sensitive data, including PHI, SSNs, or mixed/uncertain payloads | Never |
 
-Rules:
-- Every column of every table, view and materialized view is annotated; the
-  lint enforces exactly one line per column and none at table level.
-- `content` and `secret` cannot be selected at boot; the server refuses the
-  flag. They exist so the lint can require a decision for every column, and so
-  the export documents why a column is closed.
-- ClickHouse `*_mv` objects are annotated like their targets (Atlas needs the
-  column list anyway); `*_staging` columns get the same tiers as the promoted
-  table.
-- The same tiers apply in write mode: `--write-tables` still names the tables
-  an agent may mutate, and every column it writes or returns must be in the
-  selected tiers. `content`/`secret` columns are never writable through the
-  server.
+Parse by lines: normalize CRLF; count **all** lines beginning with `@access:`
+(after horizontal whitespace), including malformed markers. Require exactly one,
+as the last nonempty line, matching
+`^[\t ]*@access:[\t ]*(safe|pii|content|secret|restricted)[\t ]*$`.
+A valid marker plus an unknown marker is invalid, not one valid match.
+Keep `access` fixed; no custom-key flag in phase 1.
 
-Postgres example (`schema.sql`; Atlas emits the migration):
+Annotate every application table/view/materialized-view column. Table comments
+remain prose; lint rejects table-level markers. System, temporary, and internal
+engine objects are outside the classification inventory and never implicitly
+become queryable. Unsupported application objects still appear in metadata.
 
 ```sql
-COMMENT ON COLUMN chat_messages.id IS '@access: safe';
-COMMENT ON COLUMN chat_messages.chat_id IS '@access: safe';
-COMMENT ON COLUMN chat_messages.created_at IS '@access: safe';
-COMMENT ON COLUMN chat_messages.prompt_tokens IS 'Prompt tokens billed for this message.
-@access: safe';
-COMMENT ON COLUMN chat_messages.content IS 'Rendered message body.
-@access: content';
-COMMENT ON COLUMN chat_messages.ip_address IS '@access: pii';
+-- Illustrative columns; the inventory determines actual Gram column names.
+COMMENT ON COLUMN public.chat_messages.id IS '@access: safe';
+COMMENT ON COLUMN public.chat_messages.content IS '@access: content';
+COMMENT ON COLUMN public.chat_messages.user_email IS '@access: pii';
+COMMENT ON COLUMN public.chat_messages.ssn IS '@access: restricted';
 ```
 
-ClickHouse example:
+ClickHouse uses inline column `COMMENT` clauses in the declarative schema.
+Preserve existing prose and let the migration workflow generate the DDL.
 
-```sql
-CREATE TABLE gram.agent_events (
-    id UUID COMMENT 'Event id.
-@access: safe',
-    user_email String COMMENT '@access: pii',
-    input_content String COMMENT '@access: content',
-    ...
-) ENGINE = ...
-```
+**No automatic public classification.** The old table lists and column-name
+heuristics are review aids only. A field called `metadata`, `config`, `name`,
+`*_id`, or `*_at` is not evidence that its values are safe. Mixed JSON, arrays,
+free text, logs, and configuration can contain messages or credentials. A column
+is exposed as a whole; access to a JSON key is not a separate permission.
+Unreviewed columns remain denied and block completion of the initial inventory.
+Every promotion to `safe` or `pii` needs an explicit decision based on producers,
+consumers, and stored semantics. Tokens billed and authentication tokens must
+not be confused by name matching. Org-authored text is not automatically safe.
 
-Precedence in the MCP server: annotation mode (`--columns-from-annotations`)
-and static mode (`--read-tables`) are mutually exclusive per boot. Static mode
-keeps today's table-level behaviour for databases without annotations (e2e
-fixtures, third-party users). Annotation mode is the gram deployment.
+## Snapshot and migration lifecycle
 
----
+One immutable catalog generation contains every application's relation identity,
+kind/engine, ordered columns, original column identities, types, annotation
+status, and effective permissions. Include relevant definition/dependency
+fingerprints and a deterministic digest. PostgreSQL identity includes relation
+OID and attribute number; ClickHouse includes table UUID where available and
+ordered column/definition fingerprints. Never authorize by an alias name.
 
-# Part G — gram repository
+A request acquires one generation and uses it for parsing, binding, canonical SQL,
+the server's independent permission check, execution, and response release.
+Publishing another generation must not make a request mix old and new decisions.
+A map of names alone loses both order and identity and is insufficient.
 
-### G1: Convention doc
+Startup and reload use a shared coordinator:
 
-**Files:** create `server/database/ACCESS_TIERS.md`; link from the schema
-README (`grep -rl "schema.sql" server/*.md docs/`).
+1. Close data-query admission. Load and validate a complete catalog candidate
+   through fixed catalog queries; never fall back to table-level access.
+2. For a change, drain or cancel old-generation operations before publication;
+   suppress responses from canceled operations. If draining fails, remain closed.
+3. Reconcile **exact** column grants, including revocations and effective-grant
+   verification. PostgreSQL updates are transactional; ClickHouse updates keep
+   admission closed across all DDL steps. A partial failure never publishes.
+4. Publish the immutable catalog and matching grant generation together, then
+   reopen admission. A catalog/grant failure makes data tools unavailable and
+   readiness unhealthy until a complete retry succeeds.
 
-- Tier table, regex, "one line per column, none per table", how tiers map to
-  runtime behaviour (selectable / count-only / closed), how to run the lint and
-  the export, and the checklist for adding a column: schema.sql column +
-  comment → `mise run db:diff --name <x>` → `mise run lint:access-tiers`.
+Do not implement this as an atomic pointer swap plus `/readyz` returning 503:
+existing MCP sessions and the tunnel can still send calls. Gate every data tool,
+including EXPLAIN, and cover HTTP and stdio. Boot failure can leave health serving
+for diagnostics/retry, but data access stays closed.
 
-### G2: Generator for the initial Postgres annotations
+Provide a bounded periodic refresh, coalesced with an explicit readiness-triggered
+refresh, so stdio and deployments without readiness polling also converge.
+Unchanged digests do not rotate passwords or rebuild pools. Remove the current
+health check's early return when the static table list is empty.
 
-**Files:** create `.mise-tasks/db/access-tiers/seed.mts` (one-off, kept for
-re-runs on new tables); modify `server/database/schema.sql`; generated
-`server/migrations/<ts>_column-access-tiers.sql` + `atlas.sum`.
+**Migration guarantee:** new unannotated columns are denied before and after
+refresh by explicit bindings and explicit grants. However, polling cannot make a
+comment change, a column rename/reuse, a changed view/computed definition, or a
+semantic change to an existing allowed field instantly atomic with live queries.
+For restrictive or meaning-changing migrations, stop/drain the MCP deployment
+before applying the migration or writing sensitive values, then restart/reload
+and verify grants before reopening. Document this as the initial deployment
+protocol, not an optional refinement. Comment-only reclassification without that
+protocol takes effect after successful refresh and is not instantaneous.
 
-- Input: the table-level tiering in the appendix plus column-name rules.
-  Output: a `COMMENT ON COLUMN` per column, appended to an existing comment
-  when one exists.
-- Rules, first match wins:
-  1. Column name matches `(^|_)(email|phone|ip_address|user_name|full_name|
-     first_name|last_name|owner_email|assignee_email|requester_email|
-     actor_email|upstream_email|alert_email)$` → `pii`.
-  2. Name matches `(secret|token|password|api_key|apikey|credential|
-     encrypted|_hash$|private_key|bearer|cookie|session_key|authorization_code|
-     refresh_token|access_token|signing|marketplace_token|lease_token|
-     claim_token|challenge_token)` → `secret`.
-  3. Name matches `(^|_)(content|content_raw|body|payload|prompt|completion|
-     transcript|summary|spans|embedding|normalized_payload_json|
-     source_payload_json|result_payload|message|input|output|arguments|
-     system_prompt|user_message|confirm_prompt)($|_)` → `content`, except in
-     tables tiered `safe` in the appendix where the value is org-authored
-     configuration (`prompt_templates.prompt`, `tool_variations.confirm_prompt`,
-     `http_tool_definitions.confirm_prompt`, `risk_policies.*`,
-     `skill_versions.content`, `deployment_logs.message`,
-     `function_tool_definitions.input_schema`, `queries.spec`) → `safe`.
-  4. Type `bytea`, `halfvec`, `vector`, `jsonb` named `spec|config|settings|
-     metadata|attributes` → `safe`; other `jsonb`/`bytea` in `content`/`secret`
-     tables → the table's tier.
-  5. Everything else: `safe` if the table is `safe`/`pii`/`internal` in the
-     appendix; ids, `*_id`, `*_at`, `deleted`, `status`, `kind`, `type`,
-     `count`, `size`, `version`, `name`, `slug` → `safe` in every table;
-     remaining columns of `content` tables → `content`; remaining columns of
-     `secret` tables → `secret`.
-- The generated diff is reviewed column by column in the PR (this is the
-  security review; the script only removes the typing). The reviewer's
-  contract: every `safe` column in a `content`/`secret`/`pii` table is
-  justified in the PR description.
-- `mise run db:diff --name column-access-tiers`; the migration must contain
-  only `COMMENT ON COLUMN` statements; apply on a fresh local DB.
+## Part G — Gram repository
 
-### G3: ClickHouse annotations
+### G1: Convention and migration workflow
 
-**Files:** modify `server/clickhouse/schema.sql`, `server/clickhouse/mart.sql`;
-generated `server/clickhouse/migrations/<ts>_column-access-tiers.sql` (and the
-golang-migrate mirror if `.mise-tasks/lint/migrations.sh` requires it).
+Create `server/database/ACCESS_TIERS.md` and link it from the schema docs.
+Document tiers, whole-column semantics, counts, unsupported object kinds, and
+new-column/reclassification checklists. New columns require explicit comments;
+existing-column meaning changes require both a classification review and the
+migration protocol above. A newly added JSON key can change a column's meaning
+without adding a SQL column, so the same review applies.
 
-- Same generator (`--dialect clickhouse`) reading the CH schema: inline
-  `COMMENT '…'` per column, appended when present. `user_email`,
-  `session_user_email`, `emails`, `email_lower`, `canonical_email` → `pii`;
-  `input_content`, `output_content`, `body`, `status_message`,
-  `outcome_message` → `content`; `api_key_id` → `safe` (it is an id);
-  `identity_map.*` beyond ids → `secret`.
-- `mise run clickhouse:diff --name column-access-tiers`; apply locally.
+### G2: Inventory and explicit decisions
 
-### G4: Lint and export
+Create a seed/inventory task under `.mise-tasks/db/` and annotate
+`server/database/schema.sql`. It may propose denied tiers and highlight likely
+identity fields, but must not write inferred `safe`/`pii` decisions. Preserve
+comments and identify objects with correctly quoted schema/table/column names.
+Track unresolved decisions separately; do not invent a valid runtime tier such
+as `unreviewed`. Review allowed columns across **all** tables, including those
+previously described as safe. Historical table classifications are not approval.
 
-**Files:** create `.mise-tasks/lint/access-tiers.mts`, `.mise-tasks/db/
-access-tiers.mts`, `server/database/access-tiers.json`; modify
-`.github/workflows/pr.yaml` (next to `mise run lint:migrations`, ~line 858).
+Generate Postgres migrations and hashes with the existing tasks, inspect that
+the annotation migration contains comment changes only, and apply to a fresh
+local database. The task declares a positional migration name:
+`mise run db:diff column-access-tiers`; confirm CLI usage on the target revision.
 
-- Parser (shared by lint, export and the seed script): Postgres — every
-  `CREATE TABLE` / `CREATE [MATERIALIZED] VIEW` column list, joined with every
-  `COMMENT ON COLUMN`; ClickHouse — every `CREATE …` block's column list with
-  its inline `COMMENT`.
-- `lint:access-tiers` fails, naming each offender, when: a column has zero or
-  more than one `@access:` line; a tier is outside the vocabulary; a table
-  comment carries `@access:`; `access-tiers.json` is stale.
-- `db:access-tiers --format json|table` prints
-  `{"postgres": {"public.chat_messages": {"id": "safe", "content": "content",
-  …}}, "clickhouse": {"gram.agent_events": {…}}}`. The JSON is committed so
-  every tier change is a reviewable diff; the runtime reads the database, not
-  the file.
-- CI: `mise run lint:access-tiers` in `pr.yaml`.
+### G3: ClickHouse annotations and generated artifacts
 
-### G5: Deploy manifest
+Annotate `server/clickhouse/schema.sql` and `server/clickhouse/mart.sql`; the
+inspected `server/atlas.hcl` combines both in each ClickHouse environment and
+pins its development engine to 26.2.19.43. Our current MCP e2e engine is 25.8,
+so grant/comment probes must also run on Gram's pinned version before rollout.
+Classify materialized-view output independently of its source/target: transforms
+can change sensitivity. Include generated/materialized/alias columns in inventory;
+a selected tier alone does not make an unsupported computed column queryable.
 
-**Files:** gram infra for the MCP server (`grep -rl restrictedsql infra/
-deploy/`), or a section in `ACCESS_TIERS.md` if infra is elsewhere.
+Run `mise run clickhouse:diff column-access-tiers`. The inspected task generates
+both Atlas and golang-migrate variants and runs `clickhouse:gen-materialized-cols`.
+Review both migration formats, their hashes, and generated Go output. Confirm
+comment DDL support for each object kind on the deployed engine version; if a
+view column cannot carry a comment, keep it denied and record the unsupported
+kind rather than silently inheriting a target's annotation.
 
-- Postgres instance: `restrictedsql-mcp --dialect postgres
-  --columns-from-annotations safe --connection-level-security --tunnel
-  --tunnel-only`; ClickHouse instance likewise. `pii` is a per-deployment
-  decision (`safe,pii`).
+### G4: Lint and structured export
 
----
+Create `.mise-tasks/lint/access-tiers.mts`, `.mise-tasks/db/access-tiers.mts`, and
+`server/database/access-tiers.json`; wire lint into `.github/workflows/pr.yaml`
+next to migration lint. Use an SQL-aware parser and catalog verification, not a
+regex over CREATE blocks. Views can infer columns without declaring a column
+list; quoted identifiers, generated columns, nested types and ALTER statements
+must also be represented. Where source parsing cannot prove the shape, build an
+ephemeral database from schema/migrations and inspect its catalog; no production
+rows are needed. Unknown syntax must fail the check.
 
-# Part R — gram-restricted-sql-mcp repository
+Lint fails on missing/duplicate/invalid markers, table-level markers, stale
+export, or unaccounted application columns. Export a versioned deterministic
+JSON inventory with dialect, qualified relation, kind, ordered columns, type,
+tier, and annotation status. Generated review-only rationale can live beside the
+export; runtime policy reads database comments, not that file.
 
-### R1: Column catalog with tiers
+CI applies migrations to scratch databases and compares live inventory to the
+source/export. Include table additions, view outputs, inherited/partition
+columns, and generated columns. Engine-created objects must be explicitly
+excluded by kind/ownership, not accidentally omitted. A dropped comment on a
+recreated column must be detected.
 
-**Files:** modify `internal/policy/policy.go`, `internal/db/backend.go`;
-create `internal/policy/annotations.go`, `internal/db/postgres/annotations.go`,
-`internal/db/clickhouse/annotations.go`.
+### G5: Deployment
 
-```go
-// policy
-type Tier string // "safe" | "pii" | "content" | "secret"
-func ParseAccessTier(comment string) (Tier, bool)   // the regex, exactly one match
-type ColumnSet map[TableRef]map[string]Tier          // every annotated column
-func (p *Policy) SetCatalog(cs ColumnSet)            // replaces snapshot atomically
-func (p *Policy) SelectedTiers() map[Tier]struct{}
-func (p *Policy) CanReadColumn(t TableRef, col string) bool  // annotation mode: tier ∈ selected; static mode: t ∈ R
-func (p *Policy) ReadableColumns(t TableRef) []string        // ordered as in the catalog
-func (p *Policy) CanRead(t TableRef) bool            // annotation mode: len(ReadableColumns) > 0
+Use `--columns-from-annotations safe --connection-level-security --tunnel
+--tunnel-only` (or `safe,pii` after the identity-field review), plus existing DSN
+and tunnel configuration. Record the migration stop/drain/reload protocol in
+infra/runbooks. Keep single-owner role provisioning; replicas must not race over
+shared role credentials or grants. Prove the chosen role prefix is exclusive.
 
-// db
-type CatalogLoader interface {
-    // LoadCatalog returns every column of every table/view (outside system
-    // schemas) with its parsed tier; columns without a valid annotation are
-    // returned with tier "" so the guard can name them in rejections.
-    LoadCatalog(ctx context.Context) (policy.ColumnSet, error)
-}
-```
+## Part R — restricted SQL MCP repository
 
-- Postgres: `pg_attribute` ⨝ `pg_class` ⨝ `pg_namespace` LEFT JOIN
-  `pg_description` on `(objoid, objsubid = attnum)`, `attnum > 0`, not
-  dropped, relkind in `r,p,v,m`, schema not `pg_catalog`/`information_schema`/
-  `pg_toast%`. Replaces the existing `RefreshColumns` query (same rows, plus
-  the comment).
-- ClickHouse: `SELECT database, table, name, comment FROM system.columns WHERE
-  database NOT IN ('system','INFORMATION_SCHEMA','information_schema')`.
-- Loaded at boot (warn on failure) and on every `/readyz`, replacing the
-  current column refresh. Log added, removed and re-tiered columns at info.
+### R0: Supported surface and prerequisites
 
-### R2: Config
+The first annotation release is read-only. Reject annotation mode combined with
+`--write-tables` or `--dangerously-add-write-tools`; static write mode remains
+available with its existing contract. Column reads do not define safe DELETE,
+triggers, defaults, constraint errors, or write-transaction revocation. Add those
+only under a separate write-security plan.
 
-**Files:** modify `internal/config/config.go`, `README.md`.
+Start with supported local stored table columns. Query-time CTEs/subqueries are
+supported when their full inputs and bindings can be checked. Persisted views,
+foreign/external tables, distributed engines, and query-time computed/alias
+columns remain metadata-only until dependency and execution-identity checks are
+implemented. A view's own `safe` annotation is not proof that its definition
+cannot read a hidden base column. Materialized/stored outputs require review of
+their value semantics and proof that reads do not evaluate unapproved inputs.
+Reject an unsupported relation even for `count(*)`.
 
-- `--columns-from-annotations <tiers>`: comma list ⊆ `{safe, pii}`;
-  `content`/`secret` refused at boot. Mutually exclusive with `--read-tables`.
-  `--write-tables` allowed with either. `--annotation-key` (default `access`).
-- Static mode is unchanged for existing users; annotation mode implies strict
-  column checking.
+Retain fail-closed function/type/operator checks. Close the documented
+user-defined-function/operator shadowing path before declaring this mode ready
+for Gram: bind approved built-ins by resolved identity and trusted signatures,
+qualify where sufficient, and reject unresolved overloads, custom types/casts,
+or SECURITY DEFINER execution paths. Column grants do not constrain arbitrary
+privileged routines. Include implicit engine policies/expressions in the trusted
+schema review; unsupported execution dependencies must remain denied.
 
-### R3: Guard — column resolution and wildcard rejection (Postgres)
+### R1: Catalog API and coordinator
 
-**Files:** modify `internal/sqlguard/postgres/columns.go`, `nodes.go`,
-`guard.go`; modify `internal/sqlguard/guard.go` (`Checked.Columns`).
+Modify `internal/policy/policy.go`, `internal/db/backend.go`, both backends,
+`internal/health/health.go`, `internal/dbsec/gate.go`, and server boot wiring.
+Add annotation parsing and dialect catalog loaders.
 
-- `Checked` gains `Columns map[policy.TableRef][]string` — every base-table
-  column the statement reads or writes, for logging and for the server's
-  double check.
-- Reject in annotation mode: `A_Star` anywhere (`SELECT *`, `t.*`, `count(*)`
-  is **allowed**: `count(*)` is a `FuncCall` with `AggStar`, not a target
-  `A_Star`; keep it), whole-row references (a `ColumnRef` naming a relation
-  alias with no column, `ROW(t)`, `to_json(t)`), `RETURNING *`, `NATURAL`
-  joins, `SELECT` with an empty target list, `INSERT … DEFAULT VALUES` (no
-  column list → cannot be checked; require an explicit column list),
-  `INSERT INTO t SELECT …` without a column list.
-- Resolution (extends the scope machinery added by the column-notation fix):
-  every `ColumnRef` — qualified or not — is resolved to exactly one relation in
-  scope. Unqualified names are looked up in every relation of the innermost
-  scope, then outer scopes (correlation); zero matches → reject
-  "unknown column"; more than one → reject "ambiguous column". A match on a
-  base table checks `CanReadColumn`; a match on a derived relation (subquery,
-  CTE, VALUES, function-free join output) is allowed because its inputs were
-  already checked when the derived relation was walked. `USING (c)` resolves
-  `c` on both sides. Output column names of derived relations are inferred as
-  today (`FigureColname`), now including aliases from `AS (c1, c2)` lists.
-- Write mode: `INSERT` column list, `UPDATE SET` targets, `ON CONFLICT` index
-  and `DO UPDATE SET` columns, `RETURNING` items and `excluded.c` all resolve
-  through the same path; a target column must be writable
-  (`CanReadColumn` with the same tiers) and its table in `--write-tables`.
-- Static mode keeps today's behaviour (no per-column check) so existing e2e
-  and third-party use keep working; the walker takes the mode from the policy.
-- `cmd/sqlguard-check` gains `--columns 't=c1:safe,c2:pii'` and `--tiers safe`.
+Use a `CatalogSnapshot` with ordered `Column` records and lookup indexes, not
+`map[TableRef]map[string]Tier`. Track annotation status separately from tier,
+and distinguish relation queryability from column readability. Expose a captured
+snapshot handle to the guard; `Checked` includes its generation, relation/column
+identities, and referenced read columns. AllTables/readiness must use the dynamic
+inventory in annotation mode instead of the static `ReadTables` map.
 
-### R4: Guard — same for ClickHouse
+Postgres loads `pg_attribute`, `pg_class`, `pg_namespace`, and `pg_description`
+with object identity, attribute order, type, kind, generated status and relevant
+dependencies. Exclude dropped/system/temp columns from queryable inventory.
+ClickHouse loads `system.columns` plus table UUID, engine and relevant definition
+metadata from `system.tables`, with explicit ordering by column position.
+Include unannotated columns so binding cannot mistakenly fall through to an
+outer relation or an alias. Catalog loading must work before data grants exist;
+use a dedicated fixed-query metadata path if restricted-role visibility is
+insufficient. No arbitrary SQL runs on that path.
 
-**Files:** modify `internal/sqlguard/clickhouse/nodes.go`, `guard.go`;
-create `internal/sqlguard/clickhouse/columns.go`.
+Implement the lifecycle above. Replace one-time `EnsureProvisioned` semantics
+with grant-generation reconciliation; do not reuse boot-time password rotation
+for every refresh. Serialize refreshes and publish only complete snapshots.
 
-- Reject `*`, `t.*`, `COLUMNS(...)`, `* EXCEPT/REPLACE/APPLY`, `count(*)`?
-  — no: ClickHouse `count()` and `count(*)` are the same aggregate and read no
-  column; allow both. Reject whole-row/tuple references to a relation alias.
-- Resolution as in R3 over the AfterShip AST: FROM/JOIN/ARRAY JOIN scopes,
-  aliases, CTEs (both forms), subqueries, lambda parameters (never columns),
-  `PREWHERE`/`WHERE`/`GROUP BY`/`HAVING`/`ORDER BY`/`LIMIT BY`/window
-  clauses. ClickHouse allows referencing SELECT-list aliases in `WHERE`;
-  resolve aliases first, then columns.
+### R2: Configuration
 
-### R5: Connection-level security — column grants
+Add `--columns-from-annotations <tiers>` with a nonempty subset of `safe,pii`.
+Reject unknown/denied tiers, static read tables, write flags, or absence of
+`--connection-level-security` in annotation mode. Add bounded refresh settings
+with positive validated durations. Preserve static-mode flag requirements.
+Document unknown/unsupported columns as denied, including during catalog failure.
 
-**Files:** modify `internal/dbsec/postgres.go`, `internal/dbsec/clickhouse.go`,
-`internal/dbsec/gate.go`.
+### R3: Postgres binding and canonicalization
 
-- Postgres: in annotation mode, `GRANT SELECT (c1, c2, …) ON schema.table TO
-  restrictedsql_ro` per table with at least one readable column (no table-level
-  SELECT); `rw` additionally gets `INSERT (cols)`, `UPDATE (cols)` on
-  `--write-tables` columns in the selected tiers and table-level `DELETE`
-  (Postgres has no column-level DELETE). Postgres allows `count(*)` with a
-  column-level grant on any one column, so counts work at the DB layer too.
-- ClickHouse: `GRANT SELECT(c1, c2) ON db.table TO restrictedsql_ro`; `GRANT
-  SHOW TABLES, SHOW COLUMNS ON *.*` so metadata tools list everything
-  (metadata is global by design).
-- Re-provision whenever the readiness reload changes the column set; until it
-  succeeds `/readyz` is 503 `grants stale`.
+Extend `internal/sqlguard/postgres/{columns,nodes,guard}.go`,
+`internal/sqlguard/guard.go`, and `internal/mcpserver/server.go`.
 
-### R6: Metadata tools
+- Preserve base-column provenance and ordinals through relation aliases,
+  positional alias lists, CTE output renames, joins, and set-operation branches.
+  `FROM t AS x(secret, id)` can rename the original `secret` to `id`; checking
+  the alias string against the base catalog would authorize the wrong column.
+- Resolve qualified and unqualified names in the correct SQL scope, respecting
+  LATERAL visibility and correlation. Denied columns participate in name lookup
+  before authorization. Reject duplicate/unknown/ambiguous bindings.
+- Validate every derived input before exposing outputs. Track lineage in joined
+  and derived output slots. `USING` checks both input columns and has a merged
+  output binding, including FULL JOIN coalescing. Reject unsupported forms until
+  modeled; a join alias is not automatically a safe derived relation.
+- Handle output aliases and ordinal references with clause-specific rules:
+  ORDER BY and GROUP BY cannot share a generic alias-first resolver. Reject
+  unsupported collisions; qualify canonical base references to preserve the
+  chosen binding without changing merged-join or output-alias semantics.
+- Reject `*`, `rel.*`, whole-row values, composite star expansion, NATURAL JOIN,
+  and implicit projections. The only star exemption is the approved built-in
+  `count(*)` aggregate, with FILTER/window inputs still checked. Set operations
+  and VALUES require their own validation; an empty AST target list in those
+  structures is not the same as a projection-free leaf SELECT.
+- Reject system columns and unprovable recursion/record shapes. Validate
+  EXPLAIN through the same generation and column path; hypothetical-index
+  column names must be permitted too. Canonical SQL is the only executed SQL.
 
-**Files:** modify `internal/mcpserver/tools_meta.go`, `internal/db/backend.go`
-(`ColumnDetail.Tier`, `ColumnDetail.Selectable`).
+Add catalog fixtures to `cmd/sqlguard-check` so these bindings can be inspected
+without connecting to a real database.
 
-- `get_object_details` and `list_objects` are global (all schemas, all
-  tables, all columns). Each column shows `tier` and `selectable` so an agent
-  can write a valid query without trial and error; tables show
-  `selectable_columns` count. Tool descriptions say wildcards are rejected and
-  point at `get_object_details`.
-- Rejections name the column and its tier: `column chat_messages.content is
-  tier "content"; selectable columns: id, chat_id, …`.
+### R4: ClickHouse binding and engine settings
 
-### R7: e2e
+Add `internal/sqlguard/clickhouse/columns.go` and extend its walker/guard.
+Cover PREWHERE, WHERE, JOIN, ARRAY JOIN, GROUP BY, HAVING, ORDER BY, LIMIT BY,
+windows, CTEs, scalar aliases and lexical lambda bindings. Validate lambda bodies;
+a lambda parameter is local but a captured identifier can be a hidden column.
+Reject wildcard matchers/modifiers (`COLUMNS`, EXCEPT/REPLACE/APPLY), whole rows,
+virtual/system subcolumns, and unknown expansion forms.
 
-**Files:** modify `e2e/postgres/init.sql`, `e2e/clickhouse/init.sql`;
-create `e2e/annotations_test.go`, `e2e/clickhouse_annotations_test.go`;
-modify `e2e/corpus_test.go` (annotation-mode corpus).
+Pin analyzer and name-resolution settings supported by the deployed version.
+Do not assume universal alias-first resolution: reject alias/column collisions
+or prove and canonicalize their exact binding. Keep caller SETTINGS forbidden.
+Treat subcolumns as dependent on the classified parent; allowing a JSON/map/tuple
+column allows its contents as a unit, and hidden parents cannot be bypassed with
+a path expression. Initially reject shapes whose parent cannot be proven.
 
-- Seed comments: `allowed_orders` all `safe` except a new `note` column
-  tiered `content` and `customer_email` tiered `pii`; `allowed_customers`
-  (`email` → `pii`, rest `safe`); `forbidden_secrets` (`id` → `safe`,
-  `secret` → `secret`); `allowed_audit` (`note` → `content`, rest `safe`);
-  one column left unannotated on purpose (`allowed_orders.legacy_flag`).
-- `TestPostgresAnnotationsSafeOnly`: `SELECT id, amount FROM allowed_orders`
-  ok; `SELECT *` rejected `wildcard`; `SELECT note` rejected naming tier
-  `content`; `SELECT customer_email` rejected `pii`; `SELECT legacy_flag`
-  rejected `not annotated`; `SELECT count(*) FROM forbidden_secrets` **ok**;
-  `SELECT secret FROM forbidden_secrets` rejected; `SELECT o.id FROM
-  allowed_orders o JOIN allowed_customers c USING (id)` ok; ambiguous
-  unqualified `id` across a join rejected; `to_json(o)` rejected; `SELECT
-  o FROM allowed_orders o` rejected; CTE selecting `note` rejected at the CTE.
-- `TestPostgresAnnotationsSafeAndPii`: `customer_email` readable.
-- `TestPostgresAnnotationsFlagValidation`: `content`, `secret`, combining with
-  `--read-tables` → exit 2.
-- `TestPostgresAnnotationsMigrationAddsPhiColumn`: boot; `ALTER TABLE
-  allowed_orders ADD COLUMN ssn text` from the test; `/readyz`; `SELECT ssn`
-  rejected `not annotated`; `COMMENT ON COLUMN allowed_orders.ssn IS
-  '@access: pii'`; `/readyz`; still rejected under `safe`; boot with
-  `safe,pii` → readable. Drop the column in cleanup.
-- `TestPostgresAnnotationsReTierColumn`: `amount` re-commented to `content` →
-  after `/readyz` rejected; back to `safe` → readable.
-- `TestPostgresAnnotationsWithConnectionLevelSecurity`: same flows with the
-  flag; direct probe as `restrictedsql_ro`: `SELECT id FROM allowed_orders`
-  ok, `SELECT *` permission denied, `SELECT note` permission denied,
-  `SELECT count(*) FROM forbidden_secrets` ok; `has_column_privilege` matrix
-  flips after the re-tier probe.
-- `TestPostgresAnnotationsWrite` (`--write-tables allowed_audit`,
-  `safe`): `INSERT INTO allowed_audit (id) VALUES (…) RETURNING id` ok;
-  `INSERT … (note)` rejected; `RETURNING *` rejected; `INSERT INTO allowed_audit
-  SELECT …` without column list rejected; `UPDATE allowed_audit SET note = …`
-  rejected.
-- `TestPostgresAnnotationsMetadataGlobal`: `get_object_details forbidden_secrets`
-  returns both columns with tiers; `list_objects` lists every table.
-- ClickHouse twins for safe-only, safe+pii, wildcard forms (`*`, `COLUMNS`,
-  `* EXCEPT`), `count()`, re-tier via `ALTER TABLE … MODIFY COLUMN … COMMENT`,
-  and the connection-level grant probe via HTTP as `restrictedsql_ro`.
-- Adversarial pass (R8) reuses both guards' existing corpus in annotation mode.
+Allow built-in `count()` and `count(*)` without rewriting to `count(id)` (nullable
+ids change results). Probe access with real restricted credentials. Pin
+`optimize_functions_to_subcolumns=0` for the initial supported version: the
+validation probe found that `count(nullable_id)` otherwise required an additional
+`id.null` grant despite `SELECT(id)`. Do not broaden to table-wide grants to work
+around engine optimizations; add versioned regression coverage.
 
-### R8: Adversarial review of column resolution
+### R5: Exact column grants and admission
 
-Cross-account, as before: one account attacks the Postgres resolver
-(aliases shadowing table names, CTE output names colliding with base columns,
-`USING` on a `content` column, `ORDER BY` / `GROUP BY` positional vs. name,
-window `PARTITION BY` on a hidden column, `LATERAL` correlation to a hidden
-column, `DISTINCT ON (content)`, `EXISTS (SELECT content …)`, `IN (SELECT …)`,
-`ANY (ARRAY(SELECT content …))`, `xmin`/`ctid` system columns, `t.*` inside
-`ROW()`, `jsonb_build_object('c', t)`), the other the ClickHouse resolver
-(alias-in-WHERE, `COLUMNS('regex')`, `* EXCEPT`, `APPLY`, tuple of relation,
-`arrayJoin` over a hidden column, `PREWHERE content != ''`, `LIMIT BY`,
-`GROUP BY` on hidden, `_row_exists`/`_part` virtual columns).
+Postgres grants `USAGE` on required schemas and `SELECT (c1, c2, ...)` on each
+queryable relation, without table-level SELECT or future-column defaults.
+ClickHouse grants `SELECT(c1, c2, ...)` with only the metadata visibility needed
+for dedicated tools. Neither data role owns the relations or inherits broader
+rights. Verify effective grants, including PUBLIC/default roles, role membership,
+existing table grants, and schema ownership; fail closed if excess privileges
+cannot be removed within the provisioner's authority. Do not modify unrelated
+application roles to make the audit pass.
 
-### R9: Docs
+Revoke obsolete grants as part of every changed generation, including columns
+removed/re-tiered or renamed and objects replaced under the same name. Verify
+actual privileges before publication. An all-permitted table can still satisfy
+`SELECT *` at the database layer; the AST guard must always reject that syntax.
 
-**Files:** `README.md`, spec §4/§5 (column rules), `deploy/k8s.yaml`.
+`count(*)` worked with a single column grant in the inspected Postgres 17.10 and
+ClickHouse 25.8.33.6 fixtures. Test the deployed versions, engines and settings;
+never silently broaden permissions if another shape fails.
 
----
+### R6: Global metadata without unrestricted catalog SQL
 
-## Order and ownership
+Extend `ColumnDetail` with tier, annotation status, selectable, and denial reason;
+objects show their queryability and selectable-column count. Names, types,
+nullability and structural relationships remain visible across application
+schemas, including closed tables. Use the same catalog generation for permission
+labels and expose its version to make reload state inspectable.
 
-- G2/G3 depend on the appendix tiering; G4 on the parser; R1–R2 first, then
-  R3/R4 in parallel (two accounts), then R5–R7, then R8 cross-review.
-- G and R streams are independent. Integration: gram local DBs after
-  `mise run db:reset` / `clickhouse:rebuild`; boot the server with `safe`;
-  `get_object_details` for every table must agree with
-  `server/database/access-tiers.json`; the adversarial corpus must be green.
+Expose a fixed structural projection. Do not return sample rows, histograms,
+query logs, raw connection/engine definitions, or secret-bearing default/comment
+literals through global discovery. Existing metadata handlers return default
+expressions and prose comments: review and omit/sanitize these in annotation mode.
+Catalog/metadata tables are never automatically added to arbitrary SQL access.
+Preserve static-mode output compatibility.
 
-## Risks
+### R7: Verification matrix
 
-- **Volume of the initial annotation** (~3,000 Postgres columns, ~700
-  ClickHouse). Mitigated by the generator plus a column-by-column PR review;
-  the review is the real security work and must not be skipped.
-- **Unqualified column resolution** must match the database's own resolution
-  exactly, or the guard could resolve `c` to a safe relation while Postgres
-  resolves it to a hidden one. Mitigation: reject ambiguity instead of
-  choosing, deparse fully qualified column references (`alias.c`) so the
-  canonical SQL sent to the DB carries the guard's resolution, and rely on the
-  column grants as the second layer.
-- **Derived relations laundering**: a CTE that selects a hidden column is
-  rejected when the CTE is walked, so no later reference can reach it; the
-  e2e corpus must cover every derived form.
-- **System/virtual columns** (`ctid`, `xmin`, ClickHouse `_part`) are not in
-  the catalog and therefore unresolvable → rejected by construction; keep a
-  test.
-- **Static mode divergence**: two code paths in the guard. Keep the static
-  path as a strict superset (no column checks) and run the full existing
-  corpus in both modes.
+Use synthetic sensitive sentinels and both guard-only and real-database checks.
+These are implementation acceptance checks, not claims that the feature exists.
 
-## Appendix — starting table tiers for the generator
+| Area | Required evidence |
+|---|---|
+| Tier parsing | Missing, malformed, duplicate, mixed valid/invalid, CRLF and trailing prose cases deny; only explicit safe/opt-in pii permit |
+| Explicit access | Qualified/unqualified safe selections work; hidden columns fail in every expression/clause, even when absent from output |
+| Counts | count(*)/count()/count(1) work on eligible relations; count(hidden), hidden predicates, and zero-permitted-column relations fail; NULL semantics preserved |
+| Expansion | Star, qualified/composite star, whole rows, NATURAL and ClickHouse matchers fail, including on all-safe tables |
+| Binding | Positional aliases, duplicate outputs, shadowing, correlated/LATERAL references, USING/FULL JOIN, unions, output aliases/ordinals, lambdas and nested subcolumns |
+| Indirect access | View renaming hidden to safe, changed definitions, computed aliases, external engines and privileged/custom routine paths fail until explicitly supported |
+| New migration | Add an unannotated PHI column while serving; deny immediately before refresh and afterward, by name, aliases and expansion attempts; safe existing queries remain valid |
+| Reclassification | Stop/drain, re-tier/rename/drop-recreate/type-change, reload; old references and grants cannot survive; do not claim an uncontrolled comment change revokes instantly |
+| Lifecycle | Cold catalog failure, empty static list, stdio refresh, concurrent requests, cancellation, stale-generation result suppression, partial grant failure/retry and unchanged reload |
+| Direct grants | Connect as restricted role; safe columns/counts work, hidden and newly added columns fail; extra PUBLIC/membership grants are detected |
+| Metadata/EXPLAIN | Discover closed schemas/columns without values or credential literals; EXPLAIN and hypothetical indexes obey column policy |
+| ClickHouse | Nullable-count optimization fixture, pinned analyzer settings, supported engines and subcolumn paths; no permission broadening workaround |
+| Compatibility | Existing static suite unchanged; annotation corpus has explicit separate expectations (wildcards differ) |
 
-Unchanged from the v1 plan: the `safe` / `pii` / `content` / `secret` /
-`internal` lists for Postgres and ClickHouse (see git history of this file,
-commit `7cb82a5`). In v2 they only seed the generator's per-column decisions;
-the committed annotations are per column.
+### R8: Adversarial validation
+
+After implementation, review each resolver against the actual database's
+binding rules and attack every new supported AST shape. Require reproducible
+regressions for any bypass and run races between catalog/grant publication and
+queries. Test both privilege enforcement and guard rejection; a guard mistake
+hidden by a database permission error still needs fixing.
+
+### R9: Documentation and rollout
+
+Update README, design spec and deploy examples with the actual supported surface,
+read-only annotation scope, metadata fields, failure behavior and migration
+protocol. First run against Gram scratch databases, compare every exported column
+to live metadata, and verify permitted queries with restricted credentials.
+Roll out only after the acceptance matrix and the column-classification review
+are complete. Do not claim table comments or names alone establish safety.
+
+## Implementation order
+
+1. Agree the contract above; build G1/G4 inventory and prove comment round trips
+   for the targeted versions/object kinds.
+2. Make explicit G2/G3 classification decisions; generate/review migrations.
+3. Implement R0 prerequisites and R1/R2 snapshot/lifecycle/configuration.
+4. Implement R3/R4 binding, R5 grants and R6 metadata on the shared generation.
+5. Run R7/R8 and Gram integration, then G5/R9 rollout documentation.
+
+The initial seed review and support for complex derived/engine objects are the
+largest work items. It is acceptable to keep unsupported shapes denied while
+supporting explicit safe columns and counts on ordinary tables. It is not
+acceptable to approximate binding, infer allowed tiers, retain stale grants
+while serving, or hide a weakened guarantee behind a successful readiness probe.

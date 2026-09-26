@@ -63,7 +63,11 @@ func (s *server) instructions() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Restricted SQL access to a %s database. ", s.Policy.Dialect)
 	fmt.Fprintf(&b, "Unqualified table names resolve to schema %q. ", s.Policy.DefaultSchema)
-	fmt.Fprintf(&b, "Readable tables: %s. ", strings.Join(refStrings(s.Policy.ReadTables), ", "))
+	if s.Policy.AnnotationMode() {
+		b.WriteString("Column annotation mode: use get_object_details to discover selectable columns. Projection wildcards and whole rows are rejected; count(*) is allowed on queryable tables. ")
+	} else {
+		fmt.Fprintf(&b, "Readable tables: %s. ", strings.Join(refStrings(s.Policy.ReadTables), ", "))
+	}
 	if s.Policy.WritesEnabled {
 		fmt.Fprintf(&b, "Writable tables (inside a transaction only): %s. ", strings.Join(refStrings(s.Policy.WriteTables), ", "))
 	} else {
@@ -128,6 +132,18 @@ func (s *server) check(ctx context.Context, tool, raw string, mode sqlguard.Mode
 		s.Logger.DebugContext(ctx, "sql rejected", "tool", tool, "mode", mode.String(), "raw_sql", truncate(raw), "error", err.Error())
 		return nil, err
 	}
+	if s.Policy.AnnotationMode() {
+		if s.Policy.Catalog == nil || checked.Generation != s.Policy.Catalog.Digest {
+			return nil, sqlguard.Reject("catalog generation mismatch", "")
+		}
+		for ref, columns := range checked.Columns {
+			for _, column := range columns {
+				if reason := s.Policy.ColumnDenial(ref, column); reason != "" {
+					return nil, sqlguard.Reject(reason, ref.String()+"."+column)
+				}
+			}
+		}
+	}
 	for _, t := range checked.Tables {
 		var ok bool
 		switch mode {
@@ -190,4 +206,21 @@ func queryOutput(res *db.Result) QueryOutput {
 		out.Rows = [][]any{}
 	}
 	return out
+}
+
+// admitted uses a private server copy so concurrent requests never exchange policies.
+func (s *server) admitted(ctx context.Context) (*server, context.Context, func() error, error) {
+	if a, ok := s.Backend.(db.DataAdmission); ok {
+		bounded, cancel := s.callContext(ctx)
+		ctx, p, release, err := a.AcquireData(bounded)
+		if err != nil {
+			cancel()
+			return nil, nil, nil, err
+		}
+		finish := func() error { err := release(); cancel(); return err }
+		request := *s
+		request.Policy = p
+		return &request, ctx, finish, nil
+	}
+	return s, ctx, func() error { return nil }, nil
 }

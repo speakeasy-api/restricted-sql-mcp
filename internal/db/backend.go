@@ -41,28 +41,46 @@ type Schema struct {
 }
 
 // Object is a table, view, sequence, or extension.
+type ObjectAccess struct {
+	Generation        string `json:"generation"`
+	Queryable         bool   `json:"queryable"`
+	SelectableColumns int    `json:"selectable_columns"`
+	DenialReason      string `json:"denial_reason,omitempty"`
+}
+type ColumnAccess struct {
+	Tier             string `json:"tier,omitempty"`
+	AnnotationStatus string `json:"annotation_status"`
+	Selectable       bool   `json:"selectable"`
+	DenialReason     string `json:"denial_reason,omitempty"`
+}
+
 type Object struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"` // table | view | sequence | extension | materialized_view | dictionary
-	Engine      string `json:"engine,omitempty"`
-	RowEstimate *int64 `json:"row_estimate,omitempty"`
-	SizeBytes   *int64 `json:"size_bytes,omitempty"`
+	Access      *ObjectAccess `json:"access,omitempty"`
+	Name        string        `json:"name"`
+	Type        string        `json:"type"` // table | view | sequence | extension | materialized_view | dictionary
+	Engine      string        `json:"engine,omitempty"`
+	RowEstimate *int64        `json:"row_estimate,omitempty"`
+	SizeBytes   *int64        `json:"size_bytes,omitempty"`
 }
 
 // ColumnDetail describes one column of an object.
 type ColumnDetail struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Nullable    bool   `json:"nullable"`
-	Default     string `json:"default,omitempty"`
-	Description string `json:"description,omitempty"`
+	Access      *ColumnAccess `json:"access,omitempty"`
+	Name        string        `json:"name"`
+	Type        string        `json:"type"`
+	Nullable    bool          `json:"nullable"`
+	Default     string        `json:"default,omitempty"`
+	Description string        `json:"description,omitempty"`
 }
 
 // Constraint describes a table constraint.
 type Constraint struct {
-	Name       string `json:"name"`
-	Type       string `json:"type"` // primary_key | foreign_key | unique | check | exclusion
-	Definition string `json:"definition"`
+	Columns           []string         `json:"columns,omitempty"`
+	ReferencedTable   *policy.TableRef `json:"referenced_table,omitempty"`
+	ReferencedColumns []string         `json:"referenced_columns,omitempty"`
+	Name              string           `json:"name"`
+	Type              string           `json:"type"` // primary_key | foreign_key | unique | check | exclusion
+	Definition        string           `json:"definition"`
 }
 
 // Index describes an index.
@@ -74,6 +92,7 @@ type Index struct {
 
 // ObjectDetails is the full description of one object.
 type ObjectDetails struct {
+	Access       *ObjectAccess  `json:"access,omitempty"`
 	Schema       string         `json:"schema"`
 	Name         string         `json:"name"`
 	Type         string         `json:"type"`
@@ -128,4 +147,9 @@ type Tx interface {
 // (Postgres only in v1).
 type TxBackend interface {
 	Begin(ctx context.Context) (Tx, error)
+}
+
+// DataAdmission captures a permission generation across a complete tool call.
+type DataAdmission interface {
+	AcquireData(context.Context) (context.Context, *policy.Policy, func() error, error)
 }

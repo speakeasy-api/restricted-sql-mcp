@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -185,8 +186,18 @@ func bootServer(t *testing.T, o ServerOpts) *Server {
 		if s.Session != nil {
 			_ = s.Session.Close()
 		}
-		_ = cmd.Process.Kill()
-		<-s.exited
+		if strings.Contains(strings.Join(o.ExtraArgs, " "), "--columns-from-annotations") {
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+			select {
+			case <-s.exited:
+			case <-time.After(5 * time.Second):
+				_ = cmd.Process.Kill()
+				<-s.exited
+			}
+		} else {
+			_ = cmd.Process.Kill()
+			<-s.exited
+		}
 		if t.Failed() {
 			t.Logf("server logs (%s):\n%s", strings.Join(cmd.Args[1:], " "), logs.String())
 		}

@@ -42,6 +42,9 @@ const (
 
 // Checked is the result of a successful validation.
 type Checked struct {
+	Generation string
+	Columns    map[policy.TableRef][]string
+
 	// SQL is the canonical statement deparsed from the AST, with every table
 	// reference fully qualified as schema.table. This, never the raw input, is
 	// what gets sent to the database.

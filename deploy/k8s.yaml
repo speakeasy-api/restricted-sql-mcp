@@ -47,6 +47,13 @@ spec:
           args:
             - --dialect=postgres
             - --read-tables=public.allowed_orders,public.allowed_customers
+            # For annotation mode, replace --read-tables with these flags and
+            # supply a bootstrap DATABASE_URL (see docs/column-access.md):
+            # - --columns-from-annotations=safe
+            # - --connection-level-security
+            # - --annotation-refresh-interval=30s
+            # Stop/drain ALL MCP instances before restrictive or meaning-changing
+            # migrations; restart and verify readiness before reopening access.
             - --listen=127.0.0.1:8080
             - --statement-timeout=30s
             - --max-rows=1000

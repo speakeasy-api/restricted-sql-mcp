@@ -116,6 +116,10 @@ type Policy struct {
 	MaxRows          int
 	StatementTimeout time.Duration
 
+	AnnotationTiers map[Tier]bool
+	Catalog         *Catalog
+	relations       map[TableRef]*Relation
+
 	columns atomic.Pointer[map[TableRef][]string]
 }
 
@@ -134,6 +138,17 @@ func (p *Policy) SetColumns(cols map[TableRef][]string) {
 // Columns returns the ordered column names of t from the current snapshot, or
 // false when t is unknown or no snapshot has been loaded.
 func (p *Policy) Columns(t TableRef) ([]string, bool) {
+	if p.AnnotationMode() {
+		r, ok := p.Relation(t)
+		if !ok {
+			return nil, false
+		}
+		names := make([]string, len(r.Columns))
+		for i, c := range r.Columns {
+			names[i] = c.Name
+		}
+		return names, true
+	}
 	m := p.columns.Load()
 	if m == nil {
 		return nil, false
