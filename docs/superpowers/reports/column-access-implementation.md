@@ -108,3 +108,47 @@ An independent review pass of the implementation led to three changes:
 
 E2E helpers that expect a probe to observe a schema change now wait out the
 probe rate limit first and join a refresh that outlives one probe.
+
+## Second independent review (2026-09-25)
+
+Fresh Claude and Codex sessions reviewed commit 90f2b50 in isolated clones
+with their own PostgreSQL 17 and ClickHouse (25.8, 26.2) containers. Neither
+returned a denied value through MCP. Codex ran a 141-case differential corpus
+(78 denied-column cases) through the binder, the provisioned role directly,
+canonical SQL and MCP; every denied case was refused by both layers.
+
+Fixed:
+
+- **PostgreSQL JOIN USING types.** Merged USING columns kept the left or right
+  input expression, losing PostgreSQL's common type (integer vs bigint keys
+  overflowed). The bare merged reference is now preserved.
+- **PostgreSQL duplicate labels.** Identical compound expressions were
+  compared with source offsets and rejected; offsets are now ignored.
+- **ClickHouse relation aliases.** An alias equal to a column name made the
+  binder check column `x` while ClickHouse read subcolumn `alias.x` of a denied
+  column; only the grants stopped it. Such aliases are now rejected.
+- **ClickHouse map literals.** Map values were not walked by the binder; map
+  literals are now rejected in annotation mode.
+- **ClickHouse alias inlining.** Inlined aliases lost grouping
+  (`k * 2` with `k = id + 1`) and could be captured by lambda parameters. They
+  are now parenthesised, bound in their defining scope, and capture is refused.
+- **ClickHouse settings drift.** Verification now checks that the binder's
+  pinned settings remain immutable on the process user and no settings
+  profile is inherited.
+- **Test harness.** Pausing PostgreSQL requires an explicit container name
+  for non-default ports.
+
+Documented: ClickHouse data users can read `system.tables` DDL unless
+`select_from_system_db_requires_grant` is enabled; `EXISTS` is unavailable on
+ClickHouse in annotation mode.
+
+The reviewers' regression tests are in the repository: the PostgreSQL
+differential corpus (`internal/sqlguard/testdata/postgres_resolution_review.json`,
+unit and e2e runners) and ClickHouse binder tests.
+
+| Check | Result |
+|---|---|
+| Full e2e suite, PostgreSQL 17.10 and ClickHouse 25.8.33.6 | PASS: 107 top-level tests, sequential, no skips |
+| ClickHouse annotation suites on 26.2.19.43 | PASS: 6 tests |
+| PostgreSQL differential corpus (unit and e2e) | PASS: 141 cases |
+| `go build`, `go vet`, race-enabled unit tests | PASS |

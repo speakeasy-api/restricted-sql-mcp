@@ -79,7 +79,13 @@ aliases, alias/source collisions except identity projections, FINAL/SAMPLE, and
 unproven dotted subcolumn paths fail. Use supported functions on an allowed
 parent column instead of a dotted path. Allowed functions are checked against
 the engine's built-in function identities, including case-sensitivity rules.
-Alias expansion and expression nesting have bounds.
+Alias expansion and expression nesting have bounds. Expression aliases are
+inlined with their original grouping and bound where they are defined; an
+alias that a lambda parameter would capture is rejected. A relation alias may
+not equal a column name (or a flattened `Nested` prefix) in scope, because
+ClickHouse would read `alias.x` as a subcolumn of that column. Map literals
+(`{'k': v}`) are rejected; use `map()`. EXISTS is not a ClickHouse function in
+annotation mode; test existence with `count()` or `SELECT 1 FROM t LIMIT 1`.
 
 EXPLAIN uses the same column guard and generation as SELECT. PostgreSQL
 hypothetical-index columns must also be selectable. Writes remain unsupported.
@@ -127,7 +133,10 @@ are omitted. All metadata permission labels come from the same generation.
 This applies to the MCP tools. The provisioned data role itself can still read
 PostgreSQL's global catalogs (comments, default expressions, function bodies,
 view definitions) like any role; the SQL guard is what keeps those catalogs out
-of reach of caller queries. Keep sensitive values out of catalog text.
+of reach of caller queries. ClickHouse is the same: the data user can read
+`system.tables` DDL, including comments and defaults of denied columns, unless
+the server sets `access_control_improvements.select_from_system_db_requires_grant`
+(recommended). Keep sensitive values out of catalog text.
 
 ## Grants and refresh
 
@@ -149,7 +158,9 @@ unrelated PUBLIC grants to make an audit pass.
 ClickHouse pins `readonly=1`, `enable_analyzer=1`,
 `prefer_column_name_to_alias=1`, and `optimize_functions_to_subcolumns=0`.
 The latter avoids additional implicit subcolumn grants for operations such as
-`count(nullable_id)`. Caller SETTINGS remain prohibited.
+`count(nullable_id)`. Caller SETTINGS remain prohibited. Every verification
+checks that these four settings are still pinned as immutable on the process
+user and that no settings profile is inherited; drift closes access.
 
 At boot, every `--annotation-refresh-interval` (default 30s), and on `/readyz`,
 the coordinator loads a catalog and checks grants. Refresh calls are coalesced

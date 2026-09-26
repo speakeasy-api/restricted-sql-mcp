@@ -1,0 +1,1260 @@
+[
+  {
+    "name": "join/on",
+    "sql": "SELECT a.id,b.k FROM a JOIN b ON a.id=b.id ORDER BY a.id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id",
+        "k"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "join/inner_using",
+    "sql": "SELECT id FROM a INNER JOIN b USING(id) ORDER BY id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "coercion/inner_using_arithmetic",
+    "sql": "SELECT id+2147483647 AS n FROM a INNER JOIN b USING(id) ORDER BY id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "join/left_using",
+    "sql": "SELECT id FROM a LEFT JOIN b USING(id) ORDER BY id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "coercion/left_using_arithmetic",
+    "sql": "SELECT id+2147483647 AS n FROM a LEFT JOIN b USING(id) ORDER BY id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "join/right_using",
+    "sql": "SELECT id FROM a RIGHT JOIN b USING(id) ORDER BY id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "coercion/right_using_arithmetic",
+    "sql": "SELECT id+2147483647 AS n FROM a RIGHT JOIN b USING(id) ORDER BY id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "join/full_using",
+    "sql": "SELECT id FROM a FULL JOIN b USING(id) ORDER BY id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "coercion/full_using_arithmetic",
+    "sql": "SELECT id+2147483647 AS n FROM a FULL JOIN b USING(id) ORDER BY id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "join/using_alias",
+    "sql": "SELECT u.id FROM a JOIN b USING(id) AS u ORDER BY u.id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "join/whole_join_alias",
+    "sql": "SELECT j.id FROM (a FULL JOIN b USING(id)) AS j ORDER BY j.id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "join/positional_alias",
+    "sql": "SELECT j.key FROM (a JOIN b USING(id)) AS j(key) ORDER BY j.key",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "join/nested_using",
+    "sql": "SELECT id FROM (a FULL JOIN b USING(id)) LEFT JOIN (SELECT id FROM b) c USING(id) ORDER BY id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "derived/positional",
+    "sql": "SELECT d.secret FROM (SELECT id,k FROM a) d(secret,content) ORDER BY d.secret",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id",
+        "k"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "derived/enclosing_scope",
+    "sql": "SELECT a.id FROM a WHERE EXISTS (SELECT 1 FROM (SELECT a.id AS k) d WHERE d.k>1) ORDER BY a.id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "derived/lateral",
+    "sql": "SELECT a.id,d.k FROM a CROSS JOIN LATERAL (SELECT a.k+1 AS k) d ORDER BY a.id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id",
+        "k"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "derived/local_shadow",
+    "sql": "SELECT a.id FROM a WHERE EXISTS (SELECT 1 FROM (SELECT k AS secret FROM b) d WHERE secret>0)",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "k"
+      ]
+    },
+    "ordered": false
+  },
+  {
+    "name": "cte/positional_chain",
+    "sql": "WITH x(secret) AS (SELECT id FROM a), y(content) AS (SELECT secret FROM x) SELECT content FROM y ORDER BY content",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "cte/base_shadow",
+    "sql": "WITH a AS (SELECT k AS secret FROM b) SELECT secret FROM a ORDER BY secret",
+    "allowed": true,
+    "columns": {
+      "b": [
+        "k"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "cte/nested_shadow",
+    "sql": "WITH x AS (SELECT id FROM a) SELECT d.id FROM (WITH x AS (SELECT id FROM b) SELECT id FROM x) d ORDER BY d.id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "cte/correlated",
+    "sql": "SELECT a.id FROM a WHERE EXISTS (WITH x AS (SELECT a.k AS secret) SELECT secret FROM x WHERE secret>0)",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id",
+        "k"
+      ]
+    },
+    "ordered": false
+  },
+  {
+    "name": "group/output_alias",
+    "sql": "SELECT k AS label,count(*) FROM a GROUP BY label ORDER BY label",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "k"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "group/ordinal",
+    "sql": "SELECT k,count(*) FROM a GROUP BY 1 ORDER BY 1",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "k"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "group/identical_labels",
+    "sql": "SELECT id AS label,a.id AS label,count(*) FROM a GROUP BY label ORDER BY label",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "group/GROUPING SETS ((label),())",
+    "sql": "SELECT k AS label,count(*) FROM a GROUP BY GROUPING SETS ((label),()) ORDER BY label NULLS LAST",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "k"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "group/ROLLUP(label)",
+    "sql": "SELECT k AS label,count(*) FROM a GROUP BY ROLLUP(label) ORDER BY label NULLS LAST",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "k"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "group/CUBE(label)",
+    "sql": "SELECT k AS label,count(*) FROM a GROUP BY CUBE(label) ORDER BY label NULLS LAST",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "k"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "group/(label)",
+    "sql": "SELECT k AS label,count(*) FROM a GROUP BY (label) ORDER BY label NULLS LAST",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "k"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "group/input_before_output",
+    "sql": "SELECT min(id) AS k,count(*) FROM a GROUP BY k ORDER BY k",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id",
+        "k"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "group/output_before_outer",
+    "sql": "SELECT a.id FROM a WHERE EXISTS (SELECT d.k AS secret,count(*) FROM (SELECT k FROM b) d GROUP BY secret)",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "k"
+      ]
+    },
+    "ordered": false
+  },
+  {
+    "name": "group/grouping_sets_before_outer",
+    "sql": "SELECT a.id FROM a WHERE EXISTS (SELECT d.k AS secret,count(*) FROM (SELECT k FROM b) d GROUP BY GROUPING SETS ((secret)))",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "k"
+      ]
+    },
+    "ordered": false
+  },
+  {
+    "name": "order/output_before_input",
+    "sql": "SELECT id AS secret FROM a ORDER BY secret DESC",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "order/identical_labels",
+    "sql": "SELECT id,a.id FROM a ORDER BY id DESC",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "order/expression_input",
+    "sql": "SELECT -id AS k FROM a ORDER BY k+1,id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id",
+        "k"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "order/ordinal",
+    "sql": "SELECT k,id FROM a ORDER BY 1 DESC,2",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id",
+        "k"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "order/distinct_on_alias",
+    "sql": "SELECT DISTINCT ON (secret) id AS secret,k FROM a ORDER BY secret,k",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id",
+        "k"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "order/aggregate_sort",
+    "sql": "SELECT array_agg(id ORDER BY k,id) AS ids FROM a",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id",
+        "k"
+      ]
+    },
+    "ordered": false
+  },
+  {
+    "name": "set/UNION",
+    "sql": "SELECT id AS secret FROM a UNION SELECT id FROM b ORDER BY secret DESC",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "set/UNION ALL",
+    "sql": "SELECT id AS secret FROM a UNION ALL SELECT id FROM b ORDER BY secret DESC",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "set/INTERSECT",
+    "sql": "SELECT id AS secret FROM a INTERSECT SELECT id FROM b ORDER BY secret DESC",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "set/EXCEPT",
+    "sql": "SELECT id AS secret FROM a EXCEPT SELECT id FROM b ORDER BY secret DESC",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "set/derived_positional",
+    "sql": "SELECT d.secret FROM (SELECT id FROM a UNION ALL SELECT k FROM b) d(secret) ORDER BY d.secret",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "k"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "window/partition_order",
+    "sql": "SELECT id,row_number() OVER(PARTITION BY k ORDER BY id) AS n FROM a ORDER BY id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id",
+        "k"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "window/named_inheritance",
+    "sql": "SELECT id,sum(k) OVER w2 AS total FROM a WINDOW w AS (PARTITION BY k),w2 AS (w ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) ORDER BY id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id",
+        "k"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "window/filter",
+    "sql": "SELECT id,count(*) FILTER(WHERE k>10) OVER(ORDER BY id) AS n FROM a ORDER BY id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id",
+        "k"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "window/input_alias_collision",
+    "sql": "SELECT id AS secret,row_number() OVER(ORDER BY id) AS n FROM a ORDER BY secret",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "coercion/using_text",
+    "sql": "SELECT txt FROM a FULL JOIN b USING(txt) ORDER BY txt",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "txt"
+      ],
+      "b": [
+        "txt"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "coercion/union_unknown",
+    "sql": "SELECT txt FROM a UNION SELECT NULL ORDER BY txt NULLS LAST",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "txt"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "coercion/case",
+    "sql": "SELECT CASE WHEN k>10 THEN id ELSE 2147483648 END AS n FROM a ORDER BY id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id",
+        "k"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "coercion/array",
+    "sql": "SELECT ARRAY[id]::bigint[] AS ids FROM a ORDER BY id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "coercion/function",
+    "sql": "SELECT lower(txt),coalesce(k,0) FROM a ORDER BY id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id",
+        "k",
+        "txt"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "order/duplicate_expression_id+1",
+    "sql": "SELECT id+1 AS label,id+1 AS label FROM a ORDER BY label",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "group/duplicate_expression_id+1",
+    "sql": "SELECT id+1 AS label,id+1 AS label,count(*) FROM a GROUP BY label",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ]
+    },
+    "ordered": false
+  },
+  {
+    "name": "order/duplicate_expression_lower(txt)",
+    "sql": "SELECT lower(txt) AS label,lower(txt) AS label FROM a ORDER BY label",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "txt"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "group/duplicate_expression_lower(txt)",
+    "sql": "SELECT lower(txt) AS label,lower(txt) AS label,count(*) FROM a GROUP BY label",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "txt"
+      ]
+    },
+    "ordered": false
+  },
+  {
+    "name": "order/duplicate_expression_id::bigint",
+    "sql": "SELECT id::bigint AS label,id::bigint AS label FROM a ORDER BY label",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "group/duplicate_expression_id::bigint",
+    "sql": "SELECT id::bigint AS label,id::bigint AS label,count(*) FROM a GROUP BY label",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ]
+    },
+    "ordered": false
+  },
+  {
+    "name": "order/duplicate_expression_coalesce(k,0)",
+    "sql": "SELECT coalesce(k,0) AS label,coalesce(k,0) AS label FROM a ORDER BY label",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "k"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "group/duplicate_expression_coalesce(k,0)",
+    "sql": "SELECT coalesce(k,0) AS label,coalesce(k,0) AS label,count(*) FROM a GROUP BY label",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "k"
+      ]
+    },
+    "ordered": false
+  },
+  {
+    "name": "window/frame_subquery",
+    "sql": "SELECT id,sum(k) OVER(ORDER BY id ROWS BETWEEN (SELECT min(id) FROM b) PRECEDING AND CURRENT ROW) FROM a ORDER BY id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id",
+        "k"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "group/using_coercion",
+    "sql": "SELECT id+2147483647 AS n,count(*) FROM a LEFT JOIN b USING(id) GROUP BY id ORDER BY id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "derived/using_coercion",
+    "sql": "SELECT d.id+2147483647 AS n FROM (SELECT id FROM a JOIN b USING(id)) d ORDER BY d.id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "cte/using_coercion",
+    "sql": "WITH x AS (SELECT id FROM a JOIN b USING(id)) SELECT id+2147483647 AS n FROM x ORDER BY id",
+    "allowed": true,
+    "columns": {
+      "a": [
+        "id"
+      ],
+      "b": [
+        "id"
+      ]
+    },
+    "ordered": true
+  },
+  {
+    "name": "deny/content/projection",
+    "sql": "SELECT content FROM a",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/where",
+    "sql": "SELECT id FROM a WHERE content>0",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/join_on",
+    "sql": "SELECT a.id FROM a JOIN b ON a.content=b.id",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/join_using",
+    "sql": "SELECT a.id FROM a JOIN b USING(content)",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/join_alias",
+    "sql": "SELECT j.hidden FROM (a JOIN b USING(id)) j(key,ak,hidden)",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/derived",
+    "sql": "SELECT d.id FROM (SELECT content AS id FROM a) d",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/lateral",
+    "sql": "SELECT d.id FROM a CROSS JOIN LATERAL (SELECT a.content AS id) d",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/outer_derived",
+    "sql": "SELECT a.id FROM a WHERE EXISTS (SELECT 1 FROM (SELECT a.content AS k) d WHERE k>0)",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/inner_shadows_outer",
+    "sql": "SELECT a.id FROM (SELECT id AS content,id FROM a) a WHERE EXISTS (SELECT 1 FROM b WHERE content>0)",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/cte",
+    "sql": "WITH x(id) AS (SELECT content FROM a) SELECT id FROM x",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/group_input_collision",
+    "sql": "SELECT min(id) AS content,count(*) FROM a GROUP BY content",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/group_sets",
+    "sql": "SELECT count(*) FROM a GROUP BY GROUPING SETS ((content),())",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/group_rollup",
+    "sql": "SELECT count(*) FROM a GROUP BY ROLLUP(id,content)",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/group_cube",
+    "sql": "SELECT count(*) FROM a GROUP BY CUBE(content)",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/having",
+    "sql": "SELECT k,count(*) FROM a GROUP BY k HAVING sum(content)>0",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/order_qualified",
+    "sql": "SELECT id AS content FROM a ORDER BY a.content",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/order_expression",
+    "sql": "SELECT id AS content FROM a ORDER BY content+1",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/distinct_expression",
+    "sql": "SELECT DISTINCT ON (content+1) id AS content FROM a ORDER BY content+1",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/aggregate_sort",
+    "sql": "SELECT array_agg(id ORDER BY content) FROM a",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/set_rhs",
+    "sql": "SELECT id FROM a UNION SELECT content FROM b",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/window_partition",
+    "sql": "SELECT id AS content,row_number() OVER(PARTITION BY content) FROM a",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/window_order",
+    "sql": "SELECT id AS content,row_number() OVER(ORDER BY content) FROM a",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/window_frame_subquery",
+    "sql": "SELECT id,sum(k) OVER(ORDER BY id ROWS BETWEEN (SELECT min(content) FROM b) PRECEDING AND CURRENT ROW) FROM a",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/window_named",
+    "sql": "SELECT id,sum(k) OVER w FROM a WINDOW w AS (ORDER BY content)",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/aggregate_filter",
+    "sql": "SELECT count(*) FILTER(WHERE content>0) FROM a",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/content/coercion",
+    "sql": "SELECT coalesce(content::bigint,0) FROM a",
+    "allowed": false,
+    "denial": "content"
+  },
+  {
+    "name": "deny/secret/projection",
+    "sql": "SELECT secret FROM a",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/where",
+    "sql": "SELECT id FROM a WHERE secret>0",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/join_on",
+    "sql": "SELECT a.id FROM a JOIN b ON a.secret=b.id",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/join_using",
+    "sql": "SELECT a.id FROM a JOIN b USING(secret)",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/join_alias",
+    "sql": "SELECT j.hidden FROM (a JOIN b USING(id)) j(key,ak,ac,hidden)",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/derived",
+    "sql": "SELECT d.id FROM (SELECT secret AS id FROM a) d",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/lateral",
+    "sql": "SELECT d.id FROM a CROSS JOIN LATERAL (SELECT a.secret AS id) d",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/outer_derived",
+    "sql": "SELECT a.id FROM a WHERE EXISTS (SELECT 1 FROM (SELECT a.secret AS k) d WHERE k>0)",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/inner_shadows_outer",
+    "sql": "SELECT a.id FROM (SELECT id AS secret,id FROM a) a WHERE EXISTS (SELECT 1 FROM b WHERE secret>0)",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/cte",
+    "sql": "WITH x(id) AS (SELECT secret FROM a) SELECT id FROM x",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/group_input_collision",
+    "sql": "SELECT min(id) AS secret,count(*) FROM a GROUP BY secret",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/group_sets",
+    "sql": "SELECT count(*) FROM a GROUP BY GROUPING SETS ((secret),())",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/group_rollup",
+    "sql": "SELECT count(*) FROM a GROUP BY ROLLUP(id,secret)",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/group_cube",
+    "sql": "SELECT count(*) FROM a GROUP BY CUBE(secret)",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/having",
+    "sql": "SELECT k,count(*) FROM a GROUP BY k HAVING sum(secret)>0",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/order_qualified",
+    "sql": "SELECT id AS secret FROM a ORDER BY a.secret",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/order_expression",
+    "sql": "SELECT id AS secret FROM a ORDER BY secret+1",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/distinct_expression",
+    "sql": "SELECT DISTINCT ON (secret+1) id AS secret FROM a ORDER BY secret+1",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/aggregate_sort",
+    "sql": "SELECT array_agg(id ORDER BY secret) FROM a",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/set_rhs",
+    "sql": "SELECT id FROM a UNION SELECT secret FROM b",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/window_partition",
+    "sql": "SELECT id AS secret,row_number() OVER(PARTITION BY secret) FROM a",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/window_order",
+    "sql": "SELECT id AS secret,row_number() OVER(ORDER BY secret) FROM a",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/window_frame_subquery",
+    "sql": "SELECT id,sum(k) OVER(ORDER BY id ROWS BETWEEN (SELECT min(secret) FROM b) PRECEDING AND CURRENT ROW) FROM a",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/window_named",
+    "sql": "SELECT id,sum(k) OVER w FROM a WINDOW w AS (ORDER BY secret)",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/aggregate_filter",
+    "sql": "SELECT count(*) FILTER(WHERE secret>0) FROM a",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/secret/coercion",
+    "sql": "SELECT coalesce(secret::bigint,0) FROM a",
+    "allowed": false,
+    "denial": "secret"
+  },
+  {
+    "name": "deny/restricted/projection",
+    "sql": "SELECT restricted FROM a",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/where",
+    "sql": "SELECT id FROM a WHERE restricted>0",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/join_on",
+    "sql": "SELECT a.id FROM a JOIN b ON a.restricted=b.id",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/join_using",
+    "sql": "SELECT a.id FROM a JOIN b USING(restricted)",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/join_alias",
+    "sql": "SELECT j.hidden FROM (a JOIN b USING(id)) j(key,ak,ac,asecret,hidden)",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/derived",
+    "sql": "SELECT d.id FROM (SELECT restricted AS id FROM a) d",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/lateral",
+    "sql": "SELECT d.id FROM a CROSS JOIN LATERAL (SELECT a.restricted AS id) d",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/outer_derived",
+    "sql": "SELECT a.id FROM a WHERE EXISTS (SELECT 1 FROM (SELECT a.restricted AS k) d WHERE k>0)",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/inner_shadows_outer",
+    "sql": "SELECT a.id FROM (SELECT id AS restricted,id FROM a) a WHERE EXISTS (SELECT 1 FROM b WHERE restricted>0)",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/cte",
+    "sql": "WITH x(id) AS (SELECT restricted FROM a) SELECT id FROM x",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/group_input_collision",
+    "sql": "SELECT min(id) AS restricted,count(*) FROM a GROUP BY restricted",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/group_sets",
+    "sql": "SELECT count(*) FROM a GROUP BY GROUPING SETS ((restricted),())",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/group_rollup",
+    "sql": "SELECT count(*) FROM a GROUP BY ROLLUP(id,restricted)",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/group_cube",
+    "sql": "SELECT count(*) FROM a GROUP BY CUBE(restricted)",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/having",
+    "sql": "SELECT k,count(*) FROM a GROUP BY k HAVING sum(restricted)>0",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/order_qualified",
+    "sql": "SELECT id AS restricted FROM a ORDER BY a.restricted",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/order_expression",
+    "sql": "SELECT id AS restricted FROM a ORDER BY restricted+1",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/distinct_expression",
+    "sql": "SELECT DISTINCT ON (restricted+1) id AS restricted FROM a ORDER BY restricted+1",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/aggregate_sort",
+    "sql": "SELECT array_agg(id ORDER BY restricted) FROM a",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/set_rhs",
+    "sql": "SELECT id FROM a UNION SELECT restricted FROM b",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/window_partition",
+    "sql": "SELECT id AS restricted,row_number() OVER(PARTITION BY restricted) FROM a",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/window_order",
+    "sql": "SELECT id AS restricted,row_number() OVER(ORDER BY restricted) FROM a",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/window_frame_subquery",
+    "sql": "SELECT id,sum(k) OVER(ORDER BY id ROWS BETWEEN (SELECT min(restricted) FROM b) PRECEDING AND CURRENT ROW) FROM a",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/window_named",
+    "sql": "SELECT id,sum(k) OVER w FROM a WINDOW w AS (ORDER BY restricted)",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/aggregate_filter",
+    "sql": "SELECT count(*) FILTER(WHERE restricted>0) FROM a",
+    "allowed": false,
+    "denial": "restricted"
+  },
+  {
+    "name": "deny/restricted/coercion",
+    "sql": "SELECT coalesce(restricted::bigint,0) FROM a",
+    "allowed": false,
+    "denial": "restricted"
+  }
+]

@@ -149,8 +149,18 @@ func (s *Server) logLines(substr string) []string {
 	return out
 }
 
-func pgContainer() string {
-	return envOr("E2E_PG_CONTAINER", "e2e-postgres-1")
+// pgContainer names the container behind E2E_PG_PORT. The compose default is
+// assumed only for the compose default port; a custom port needs an explicit
+// E2E_PG_CONTAINER so a run never pauses another stack's database.
+func pgContainer(t *testing.T) string {
+	t.Helper()
+	if name := os.Getenv("E2E_PG_CONTAINER"); name != "" {
+		return name
+	}
+	if envOr("E2E_PG_PORT", "55433") != "55433" || os.Getenv("E2E_PG_DSN") != "" {
+		t.Skip("set E2E_PG_CONTAINER to the container behind a custom Postgres port")
+	}
+	return "e2e-postgres-1"
 }
 
 // pausePostgres freezes the Postgres container and returns an idempotent
@@ -158,18 +168,19 @@ func pgContainer() string {
 // leaves the shared stack paused.
 func pausePostgres(t *testing.T) func() {
 	t.Helper()
+	container := pgContainer(t)
 	var once sync.Once
 	unpause := func() {
 		once.Do(func() {
-			out, err := exec.Command("docker", "unpause", pgContainer()).CombinedOutput()
+			out, err := exec.Command("docker", "unpause", container).CombinedOutput()
 			if err != nil {
-				t.Logf("docker unpause %s: %v: %s", pgContainer(), err, out)
+				t.Logf("docker unpause %s: %v: %s", container, err, out)
 			}
 		})
 	}
 	t.Cleanup(unpause)
-	if out, err := exec.Command("docker", "pause", pgContainer()).CombinedOutput(); err != nil {
-		t.Fatalf("docker pause %s: %v: %s", pgContainer(), err, out)
+	if out, err := exec.Command("docker", "pause", container).CombinedOutput(); err != nil {
+		t.Fatalf("docker pause %s: %v: %s", container, err, out)
 	}
 	return unpause
 }

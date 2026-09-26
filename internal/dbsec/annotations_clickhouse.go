@@ -208,6 +208,9 @@ func verifyCHAnnotations(ctx context.Context, c driver.Conn, role string, pol *p
 	if memberships != 0 {
 		return fmt.Errorf("annotation role has excess memberships")
 	}
+	if err := verifyCHPinnedSettings(ctx, c, role); err != nil {
+		return err
+	}
 	rows, err := c.Query(ctx, `SELECT access_type,coalesce(database,''),coalesce(table,''),coalesce(column,''),is_partial_revoke,grant_option FROM system.grants WHERE user_name=?`, role)
 	if err != nil {
 		return err
@@ -248,4 +251,50 @@ func (p *ClickHouseAnnotations) Close(ctx context.Context) error {
 	}
 	defer c.Close()
 	return c.Exec(ctx, "DROP USER IF EXISTS "+chIdent(p.role()))
+}
+
+// chPinnedSettings are settings the column binder relies on. They must stay
+// at these values and be immutable (CONST) for the annotation user.
+var chPinnedSettings = map[string]string{
+	"readonly":                         "1",
+	"enable_analyzer":                  "1",
+	"prefer_column_name_to_alias":      "1",
+	"optimize_functions_to_subcolumns": "0",
+}
+
+// verifyCHPinnedSettings detects drift from ALTER USER ... SETTINGS or an
+// assigned settings profile while the catalog digest is unchanged.
+func verifyCHPinnedSettings(ctx context.Context, c driver.Conn, role string) error {
+	rows, err := c.Query(ctx, `SELECT coalesce(setting_name,''),coalesce(value,''),coalesce(toString(writability),''),coalesce(inherit_profile,'') FROM system.settings_profile_elements WHERE user_name=?`, role)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var name, value, writability, profile string
+		if err := rows.Scan(&name, &value, &writability, &profile); err != nil {
+			return err
+		}
+		if profile != "" {
+			return fmt.Errorf("annotation user inherits settings profile %q", profile)
+		}
+		want, pinned := chPinnedSettings[name]
+		if !pinned {
+			continue
+		}
+		if value != want || writability != "CONST" {
+			return fmt.Errorf("annotation user setting %s drifted (value %q, %s)", name, value, writability)
+		}
+		seen[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for name := range chPinnedSettings {
+		if !seen[name] {
+			return fmt.Errorf("annotation user setting %s is not pinned", name)
+		}
+	}
+	return nil
 }

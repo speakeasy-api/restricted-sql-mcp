@@ -178,10 +178,96 @@ func (b *chColumnBinder) resolve(e parser.Expr, s *chBindScope) (parser.Expr, er
 			}
 			s.resolving[name] = true
 			defer delete(s.resolving, name)
-			return b.expr(cloneCH(a), s)
+			// Bind the alias as written in its defining scope: lambda
+			// parameters at the use site must not capture its names.
+			defining := *s
+			defining.locals = map[string]bool{}
+			out, err := b.expr(cloneCH(a), &defining)
+			if err != nil {
+				return nil, err
+			}
+			if captured := chCapturedIdent(out, s.locals); captured != "" {
+				return nil, sqlguard.Reject("expression alias would be captured by a lambda parameter", captured)
+			}
+			return chParenthesize(out), nil
 		}
 	}
 	return nil, sqlguard.Reject("unknown column, subcolumn or whole-row reference", parser.Format(e))
+}
+
+// chParenthesize keeps the operator precedence of an inlined alias. Atoms
+// (identifiers, literals, calls, subqueries, existing parentheses) need none.
+func chParenthesize(e parser.Expr) parser.Expr {
+	if _, ok := chParts(e); ok {
+		return e
+	}
+	switch e.(type) {
+	case *parser.NumberLiteral, *parser.StringLiteral, *parser.NullLiteral, *parser.FunctionExpr, *parser.ParamExprList, *parser.SubQuery, *parser.ArrayParamList:
+		return e
+	}
+	return &parser.ParamExprList{Items: &parser.ColumnExprList{Items: []parser.Expr{&parser.ColumnExpr{Expr: e}}}}
+}
+
+// chUnparen removes one layer of parentheses added by chParenthesize.
+func chUnparen(e parser.Expr) parser.Expr {
+	if p, ok := e.(*parser.ParamExprList); ok && p.ColumnArgList == nil && p.Items != nil && len(p.Items.Items) == 1 {
+		if c, ok := p.Items.Items[0].(*parser.ColumnExpr); ok && c.Alias == nil {
+			return c.Expr
+		}
+	}
+	return e
+}
+
+// chCapturedIdent reports an unqualified identifier in e that a lambda
+// parameter in locals would capture.
+func chCapturedIdent(e parser.Expr, locals map[string]bool) string {
+	if len(locals) == 0 {
+		return ""
+	}
+	found := ""
+	var walk func(v reflect.Value)
+	walk = func(v reflect.Value) {
+		if found != "" || !v.IsValid() {
+			return
+		}
+		switch v.Kind() {
+		case reflect.Interface, reflect.Pointer:
+			if v.IsNil() {
+				return
+			}
+			switch n := v.Interface().(type) {
+			case *parser.Ident:
+				if locals[n.Name] {
+					found = n.Name
+				}
+				return
+			case *parser.Path:
+				// Only the leading segment of a qualified path can bind to a
+				// lambda parameter.
+				if len(n.Fields) > 0 && locals[n.Fields[0].Name] {
+					found = n.Fields[0].Name
+				}
+				return
+			case *parser.FunctionExpr:
+				// Function names are not variables; check arguments only.
+				walk(reflect.ValueOf(n.Params))
+				return
+			}
+			walk(v.Elem())
+		case reflect.Struct:
+			for i := 0; i < v.NumField(); i++ {
+				if v.Type().Field(i).IsExported() {
+					walk(v.Field(i))
+				}
+			}
+		case reflect.Slice:
+			for i := 0; i < v.Len(); i++ {
+				walk(v.Index(i))
+			}
+		}
+	}
+	walk(reflect.ValueOf(e))
+	return found
 }
 func (b *chColumnBinder) query(q *parser.SelectQuery, parent map[string][]string) ([]string, error) {
 	b.depth++
@@ -250,13 +336,33 @@ func (b *chColumnBinder) query(q *parser.SelectQuery, parent map[string][]string
 			}
 		}
 	}
+	// ClickHouse reads `alias.x` as subcolumn x of a column named alias when
+	// one exists, before the relation alias. A relation alias that equals a
+	// column name (or a flattened Nested prefix) in scope is therefore
+	// ambiguous between a checked column and an unchecked subcolumn.
+	columnNames := map[string]bool{}
+	for _, r := range s.relations {
+		for _, slot := range r.slots {
+			columnNames[slot.name] = true
+			if i := strings.IndexByte(slot.name, '.'); i > 0 {
+				columnNames[slot.name[:i]] = true
+			}
+		}
+	}
+	for _, r := range s.relations {
+		for _, q := range r.qualifiers {
+			if len(q) == 1 && columnNames[q[0]] {
+				return nil, sqlguard.Reject("relation alias shadows a column or subcolumn path; choose a different alias", q[0])
+			}
+		}
+	}
 	// A colliding alias could be substituted into even qualified expressions.
 	// Reject collisions except a plain identity projection, then pin column-first
 	// resolution at the database role and inline all other expression aliases.
 	for _, item := range q.SelectItems {
 		if item.Alias != nil {
 			name := item.Alias.Name
-			if previous, exists := s.aliases[name]; exists && parser.Format(previous) != parser.Format(item.Expr) {
+			if previous, exists := s.aliases[name]; exists && parser.Format(chUnparen(previous)) != parser.Format(chUnparen(item.Expr)) {
 				return nil, sqlguard.Reject("duplicate expression alias", name)
 			}
 			collision := false
@@ -581,6 +687,8 @@ func (b *chColumnBinder) expr(e parser.Expr, s *chBindScope) (parser.Expr, error
 		return e, err
 	case *parser.AliasExpr:
 		return nil, sqlguard.Reject("nested expression aliases are not supported", "")
+	case *parser.MapLiteral:
+		return nil, sqlguard.Reject("map literals are not supported in annotation mode; use map()", "")
 	case *parser.ColumnExpr:
 		if n.Alias != nil {
 			return nil, sqlguard.Reject("nested expression aliases are not supported", "")

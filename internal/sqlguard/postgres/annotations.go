@@ -95,11 +95,34 @@ func oneOutput(outputs []pgSlot, name string) (pgSlot, bool, error) {
 		return pgSlot{}, false, nil
 	}
 	for _, other := range m[1:] {
-		if m[0].bound == nil || other.bound == nil || !proto.Equal(m[0].bound, other.bound) {
+		if m[0].bound == nil || other.bound == nil || !proto.Equal(withoutLocations(m[0].bound), withoutLocations(other.bound)) {
 			return pgSlot{}, false, sqlguard.Reject("ambiguous output column", name)
 		}
 	}
 	return m[0], true, nil
+}
+
+// withoutLocations clones a parse tree and clears source offsets, so equal
+// expressions written at different positions compare equal.
+func withoutLocations(n *pg.Node) *pg.Node {
+	c := clonePG(n)
+	clearLocations(c.ProtoReflect())
+	return c
+}
+func clearLocations(m protoreflect.Message) {
+	m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+		switch {
+		case fd.Name() == "location" && fd.Kind() == protoreflect.Int32Kind:
+			m.Clear(fd)
+		case fd.Kind() == protoreflect.MessageKind && fd.IsList():
+			for i := 0; i < v.List().Len(); i++ {
+				clearLocations(v.List().Get(i).Message())
+			}
+		case fd.Kind() == protoreflect.MessageKind && !fd.IsMap():
+			clearLocations(v.Message())
+		}
+		return true
+	})
 }
 func joinPGFrom(a, c pgFromBinding) pgFromBinding {
 	return pgFromBinding{slots: append(append([]pgSlot{}, a.slots...), c.slots...), relations: append(append([]pgRelationBinding{}, a.relations...), c.relations...)}
@@ -440,14 +463,12 @@ func (b *pgColumnBinder) from(n *pg.Node, current *pgBindingScope, ctes map[stri
 			if err := b.use(c); err != nil {
 				return pgFromBinding{}, err
 			}
-			expr := a.expr
-			switch j.Jointype {
-			case pg.JoinType_JOIN_RIGHT:
-				expr = c.expr
-			case pg.JoinType_JOIN_FULL:
-				expr = &pg.Node{Node: &pg.Node_CoalesceExpr{CoalesceExpr: &pg.CoalesceExpr{Args: []*pg.Node{clonePG(a.expr), clonePG(c.expr)}}}}
-			}
-			merged = append(merged, pgSlot{name: name, expr: expr, uses: append(append([]pgColumnUse{}, a.uses...), c.uses...)})
+			// A merged USING column is only reachable by its bare name, and
+			// PostgreSQL gives it the inputs' common type (with COALESCE for
+			// FULL joins). Keep the bare reference so PostgreSQL resolves the
+			// merged column itself; substituting either input would change the
+			// type. Permission uses still cover both inputs.
+			merged = append(merged, pgSlot{name: name, expr: pgRef(name), uses: append(append([]pgColumnUse{}, a.uses...), c.uses...)})
 		}
 		if j.JoinUsingAlias != nil {
 			joined.relations = append(joined.relations, pgRelationBinding{qualifiers: [][]string{{j.JoinUsingAlias.Aliasname}}, slots: qualifyPGSlots(merged, []string{j.JoinUsingAlias.Aliasname})})
