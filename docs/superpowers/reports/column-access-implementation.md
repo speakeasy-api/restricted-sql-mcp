@@ -80,19 +80,19 @@ No application data classification or Gram deployment was changed by this work.
 
 An independent review pass of the implementation led to three changes:
 
-- **PostgreSQL casts and default conversions.** These are resolved by type,
+- PostgreSQL casts and default conversions. These are resolved by type,
   so the `pg_catalog` search path cannot exclude them. The catalog loader now
   fails refresh while a cast between two built-in types, or a `pg_catalog`
   default conversion, uses a function outside `pg_catalog`; the server stays
   unavailable until it is removed. Extension casts on extension types, such as
   pgvector's 23 casts in Gram's database, are ignored because guarded SQL cannot
   reach them.
-- **Refresh lifecycle.** Refreshes run detached from their trigger, bounded by
+- Refresh lifecycle. Refreshes run detached from their trigger, bounded by
   the gate lifetime and refresh timeout. A readiness probe that times out or
   disconnects stops waiting without cancelling the refresh or closing
   admission. Probe-triggered refreshes reuse a result under two seconds old.
   A refresh's own timeout still fails closed.
-- **PostgreSQL name resolution.** Non-LATERAL derived tables see enclosing
+- PostgreSQL name resolution. Non-LATERAL derived tables see enclosing
   query levels; GROUP BY (with GROUPING SETS/ROLLUP/CUBE and implicit rows)
   resolves local inputs, then output labels, then outer levels; identical
   duplicate output labels are accepted. Each accepted form was run on
@@ -119,23 +119,23 @@ canonical SQL and MCP; every denied case was refused by both layers.
 
 Fixed:
 
-- **PostgreSQL JOIN USING types.** Merged USING columns kept the left or right
+- PostgreSQL JOIN USING types. Merged USING columns kept the left or right
   input expression, losing PostgreSQL's common type (integer vs bigint keys
   overflowed). The bare merged reference is now preserved.
-- **PostgreSQL duplicate labels.** Identical compound expressions were
+- PostgreSQL duplicate labels. Identical compound expressions were
   compared with source offsets and rejected; offsets are now ignored.
-- **ClickHouse relation aliases.** An alias equal to a column name made the
+- ClickHouse relation aliases. An alias equal to a column name made the
   binder check column `x` while ClickHouse read subcolumn `alias.x` of a denied
   column; only the grants stopped it. Such aliases are now rejected.
-- **ClickHouse map literals.** Map values were not walked by the binder; map
+- ClickHouse map literals. Map values were not walked by the binder; map
   literals are now rejected in annotation mode.
-- **ClickHouse alias inlining.** Inlined aliases lost grouping
+- ClickHouse alias inlining. Inlined aliases lost grouping
   (`k * 2` with `k = id + 1`) and could be captured by lambda parameters. They
   are now parenthesised, bound in their defining scope, and capture is refused.
-- **ClickHouse settings drift.** Verification now checks that the binder's
+- ClickHouse settings drift. Verification now checks that the binder's
   pinned settings remain immutable on the process user and no settings
   profile is inherited.
-- **Test harness.** Pausing PostgreSQL requires an explicit container name
+- Test harness. Pausing PostgreSQL requires an explicit container name
   for non-default ports.
 
 Documented: ClickHouse data users can read `system.tables` DDL unless

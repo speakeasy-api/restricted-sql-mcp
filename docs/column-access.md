@@ -9,10 +9,10 @@ to keep the existing static table policy.
 
 ## Classifying a column
 
-The class vocabulary belongs to the database owner, not to this server. Column
-classifications are ordinary schema documentation that other tools (redaction,
-retention, exports, reviews) can use too; the server only needs to know which
-classes a deployment allows. Class names are lowercase words joined by single
+The database owner defines the class vocabulary. Column classifications are
+ordinary schema documentation that other tools (redaction, retention, exports,
+reviews) can use too; this server only needs to know which classes a
+deployment allows. Class names are lowercase words joined by single
 hyphens, at most 63 characters.
 
 Append exactly one access marker as the last nonempty line of its comment:
