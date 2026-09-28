@@ -1,8 +1,8 @@
 # Column access annotations
 
 `--columns-from-annotations <classes>` enables read-only access to columns whose
-`@access` class is in the comma-separated list, for example `safe` or
-`safe,pii`. Every other class, and every missing or malformed marker, is
+`@access` class is in the comma-separated list, for example `confidential` or
+`confidential,confidential-pii`. Every other class, and every missing or malformed marker, is
 denied. The mode requires `--connection-level-security` and cannot be combined
 with `--read-tables`, `--write-tables`, or write tools. Omit the annotation flag
 to keep the existing static table policy.
@@ -19,12 +19,12 @@ Append exactly one access marker as the last nonempty line of its comment:
 
 ```sql
 -- PostgreSQL
-COMMENT ON COLUMN public.messages.id IS E'Message identifier\n@access: safe';
+COMMENT ON COLUMN public.messages.id IS E'Message identifier\n@access: confidential';
 COMMENT ON COLUMN public.messages.body IS '@access: opaque-restricted';
-COMMENT ON COLUMN public.messages.email IS '@access: pii';
+COMMENT ON COLUMN public.messages.email IS '@access: confidential-pii';
 
 -- ClickHouse
-ALTER TABLE app.messages COMMENT COLUMN id '@access: safe';
+ALTER TABLE app.messages COMMENT COLUMN id '@access: confidential';
 ALTER TABLE app.messages COMMENT COLUMN body '@access: opaque-restricted';
 ```
 
@@ -39,9 +39,9 @@ An example vocabulary (Gram's):
 
 | Class | Meaning | Typical allowlist |
 |---|---|---|
-| `safe` | Reviewed operational/organizational metadata | Allowed |
-| `pii` | Reviewed identity/contact fields | Opt-in |
-| `secret` | Credentials, tokens, keys, cookies, credential hashes | Never |
+| `confidential` | Reviewed operational/organizational metadata | Allowed |
+| `confidential-pii` | Reviewed identity/contact fields | Opt-in |
+| `secret-restricted` | Credentials, tokens, keys, cookies, credential hashes | Never |
 | `restricted` | Known regulated or sensitive data, including PHI | Never |
 | `opaque-restricted` | Arbitrary customer, user or model content that may hold restricted data | Never |
 
