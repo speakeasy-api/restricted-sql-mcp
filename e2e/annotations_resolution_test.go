@@ -171,3 +171,25 @@ func TestAnnotationsAbandonedReadinessProbesKeepAdmission(t *testing.T) {
 		}
 	}
 }
+
+// Class names belong to the database owner. The server allows exactly the
+// configured classes and denies every other, including ones it never saw.
+func TestAnnotationsDeploymentDefinedClasses(t *testing.T) {
+	c, schema := annotationPG(t)
+	for _, sql := range []string{
+		fmt.Sprintf(`CREATE TABLE %s.events (id integer, payload text, note text)`, schema),
+		fmt.Sprintf(`COMMENT ON COLUMN %s.events.id IS '@access: operational'`, schema),
+		fmt.Sprintf(`COMMENT ON COLUMN %s.events.payload IS 'Raw event body submitted by customers.
+@access: opaque-restricted'`, schema),
+		fmt.Sprintf(`COMMENT ON COLUMN %s.events.note IS '@access: safe'`, schema),
+		fmt.Sprintf(`INSERT INTO %s.events VALUES (1, 'hidden', 'also hidden')`, schema),
+	} {
+		if _, err := c.Exec(context.Background(), sql); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	s := bootServer(t, annotationOpts(schema, "operational"))
+	s.mustCall(t, "execute_sql_readonly", map[string]any{"sql": "SELECT id FROM events"})
+	s.mustReject(t, "execute_sql_readonly", map[string]any{"sql": "SELECT payload FROM events"}, "opaque-restricted")
+	s.mustReject(t, "execute_sql_readonly", map[string]any{"sql": "SELECT note FROM events"}, `"safe" is not selected`)
+}

@@ -20,7 +20,7 @@ func annotationPolicy(t *testing.T, dialect policy.Dialect) *policy.Policy {
 		for i, spec := range []struct {
 			name string
 			tier policy.Tier
-		}{{"id", policy.Safe}, {"secret", policy.Secret}, {"tags", policy.Safe}} {
+		}{{"id", policy.Tier("safe")}, {"secret", policy.Tier("secret")}, {"tags", policy.Tier("safe")}} {
 			r.Columns = append(r.Columns, policy.CatalogColumn{Name: spec.name, Identity: fmt.Sprint(i), Position: i + 1, AnnotationStatus: "valid", Tier: spec.tier})
 		}
 		cat.Relations = append(cat.Relations, r)
@@ -28,7 +28,7 @@ func annotationPolicy(t *testing.T, dialect policy.Dialect) *policy.Policy {
 	if err := cat.Seal(); err != nil {
 		t.Fatal(err)
 	}
-	return (&policy.Policy{Dialect: dialect, DefaultSchema: "app", AnnotationTiers: map[policy.Tier]bool{policy.Safe: true}}).WithCatalog(cat)
+	return (&policy.Policy{Dialect: dialect, DefaultSchema: "app", AnnotationTiers: map[policy.Tier]bool{policy.Tier("safe"): true}}).WithCatalog(cat)
 }
 
 func TestAnnotationGuardsRejectHiddenInputsWithoutDatabase(t *testing.T) {

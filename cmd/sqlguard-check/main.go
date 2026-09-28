@@ -76,8 +76,8 @@ func main() {
 		pol.AnnotationTiers = map[policy.Tier]bool{}
 		for _, tier := range strings.Split(*tiers, ",") {
 			t := policy.Tier(strings.TrimSpace(tier))
-			if t != policy.Safe && t != policy.PII {
-				fatal(fmt.Errorf("only safe and pii may be selected"))
+			if !policy.ValidTierName(string(t)) {
+				fatal(fmt.Errorf("invalid class name %q", t))
 			}
 			pol.AnnotationTiers[t] = true
 		}

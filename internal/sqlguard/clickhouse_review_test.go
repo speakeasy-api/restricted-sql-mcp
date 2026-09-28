@@ -19,7 +19,7 @@ func review2CHPolicy(t *testing.T) *policy.Policy {
 	for i, spec := range []struct {
 		name string
 		tier policy.Tier
-	}{{"id", policy.Safe}, {"x", policy.Safe}, {"a", policy.Safe}, {"tup", policy.Content}, {"n.a", ""}, {"body", policy.Content}} {
+	}{{"id", policy.Tier("safe")}, {"x", policy.Tier("safe")}, {"a", policy.Tier("safe")}, {"tup", policy.Tier("content")}, {"n.a", ""}, {"body", policy.Tier("content")}} {
 		status := "valid"
 		if spec.tier == "" {
 			status = "not annotated"
@@ -30,7 +30,7 @@ func review2CHPolicy(t *testing.T) *policy.Policy {
 	if err := cat.Seal(); err != nil {
 		t.Fatal(err)
 	}
-	return (&policy.Policy{Dialect: policy.ClickHouse, DefaultSchema: "app", AnnotationTiers: map[policy.Tier]bool{policy.Safe: true}}).WithCatalog(cat)
+	return (&policy.Policy{Dialect: policy.ClickHouse, DefaultSchema: "app", AnnotationTiers: map[policy.Tier]bool{policy.Tier("safe"): true}}).WithCatalog(cat)
 }
 
 // A relation alias equal to a denied column name makes ClickHouse resolve

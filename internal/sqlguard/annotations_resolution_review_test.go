@@ -32,7 +32,7 @@ func TestPostgresResolutionReviewUnit(t *testing.T) {
 	for _, name := range []string{"a", "b"} {
 		r := policy.Relation{Ref: policy.TableRef{Schema: "review", Name: name}, Kind: "table", Identity: name}
 		for i, col := range []string{"id", "k", "content", "secret", "restricted", "txt"} {
-			tier := policy.Safe
+			tier := policy.Tier("safe")
 			if col == "content" || col == "secret" || col == "restricted" {
 				tier = policy.Tier(col)
 			}
@@ -43,7 +43,7 @@ func TestPostgresResolutionReviewUnit(t *testing.T) {
 	if err := cat.Seal(); err != nil {
 		t.Fatal(err)
 	}
-	pol := (&policy.Policy{Dialect: policy.Postgres, DefaultSchema: "review", AnnotationTiers: map[policy.Tier]bool{policy.Safe: true}}).WithCatalog(cat)
+	pol := (&policy.Policy{Dialect: policy.Postgres, DefaultSchema: "review", AnnotationTiers: map[policy.Tier]bool{policy.Tier("safe"): true}}).WithCatalog(cat)
 	for _, tc := range cases {
 		t.Run(tc.Name, func(t *testing.T) {
 			got, err := pgguard.New().Check(tc.SQL, sqlguard.ModeRead, pol)

@@ -57,10 +57,10 @@ type gateTestBackend struct{ db.Backend }
 func (*gateTestBackend) Ping(context.Context) error { return nil }
 func (*gateTestBackend) Close() error               { return nil }
 func newTestAnnotationGate(s *gateTestSource) *AnnotationGate {
-	return NewAnnotationGate(&policy.Policy{AnnotationTiers: map[policy.Tier]bool{policy.Safe: true}}, s, func(context.Context, Creds, *policy.Policy) (db.Backend, error) { return &gateTestBackend{}, nil }, time.Second, nil)
+	return NewAnnotationGate(&policy.Policy{AnnotationTiers: map[policy.Tier]bool{policy.Tier("safe"): true}}, s, func(context.Context, Creds, *policy.Policy) (db.Backend, error) { return &gateTestBackend{}, nil }, time.Second, nil)
 }
 func TestAnnotationGateInvalidatesOldResultsBeforePublication(t *testing.T) {
-	s := &gateTestSource{tier: policy.Safe}
+	s := &gateTestSource{tier: policy.Tier("safe")}
 	g := newTestAnnotationGate(s)
 	defer g.Close()
 	if err := g.Refresh(context.Background()); err != nil {
@@ -72,7 +72,7 @@ func TestAnnotationGateInvalidatesOldResultsBeforePublication(t *testing.T) {
 	}
 	old := p.Catalog.Digest
 	s.mu.Lock()
-	s.tier = policy.Content
+	s.tier = policy.Tier("content")
 	s.mu.Unlock()
 	refreshed := make(chan error, 1)
 	go func() { refreshed <- g.Refresh(context.Background()) }()
@@ -107,7 +107,7 @@ func TestAnnotationGateInvalidatesOldResultsBeforePublication(t *testing.T) {
 func TestAnnotationGateFailuresStayClosedAndRetry(t *testing.T) {
 	for _, phase := range []string{"load", "grants", "verify"} {
 		t.Run(phase, func(t *testing.T) {
-			s := &gateTestSource{tier: policy.Safe}
+			s := &gateTestSource{tier: policy.Tier("safe")}
 			g := newTestAnnotationGate(s)
 			defer g.Close()
 			if err := g.Refresh(context.Background()); err != nil {
@@ -119,7 +119,7 @@ func TestAnnotationGateFailuresStayClosedAndRetry(t *testing.T) {
 			case "load":
 				s.loadErr = fault
 			case "grants":
-				s.tier = policy.Content
+				s.tier = policy.Tier("content")
 				s.reconcileErr = fault
 			case "verify":
 				s.verifyErr = fault
@@ -150,7 +150,7 @@ func TestAnnotationGateFailuresStayClosedAndRetry(t *testing.T) {
 	}
 }
 func TestAnnotationGateUnchangedCatalogDoesNotReprovision(t *testing.T) {
-	s := &gateTestSource{tier: policy.Safe}
+	s := &gateTestSource{tier: policy.Tier("safe")}
 	g := newTestAnnotationGate(s)
 	defer g.Close()
 	for i := 0; i < 3; i++ {
@@ -164,7 +164,7 @@ func TestAnnotationGateUnchangedCatalogDoesNotReprovision(t *testing.T) {
 }
 
 func TestAnnotationGateDrainTimeoutKeepsAdmissionClosed(t *testing.T) {
-	s := &gateTestSource{tier: policy.Safe}
+	s := &gateTestSource{tier: policy.Tier("safe")}
 	g := newTestAnnotationGate(s)
 	defer g.Close()
 	if err := g.Refresh(context.Background()); err != nil {
@@ -176,7 +176,7 @@ func TestAnnotationGateDrainTimeoutKeepsAdmissionClosed(t *testing.T) {
 	}
 	defer finish()
 	s.mu.Lock()
-	s.tier = policy.Secret
+	s.tier = policy.Tier("secret")
 	s.mu.Unlock()
 	g.timeout = 20 * time.Millisecond
 	if err := g.Refresh(context.Background()); err == nil {
@@ -203,7 +203,7 @@ func TestAnnotationGateDrainTimeoutKeepsAdmissionClosed(t *testing.T) {
 // A caller that stops waiting (probe deadline, client disconnect) must not
 // abort the refresh or close admission for everyone else.
 func TestAnnotationGateCallerCancellationDoesNotCloseAdmission(t *testing.T) {
-	s := &gateTestSource{tier: policy.Safe}
+	s := &gateTestSource{tier: policy.Tier("safe")}
 	g := newTestAnnotationGate(s)
 	defer g.Close()
 	if err := g.Refresh(context.Background()); err != nil {
@@ -235,7 +235,7 @@ func TestAnnotationGateCallerCancellationDoesNotCloseAdmission(t *testing.T) {
 }
 
 func TestAnnotationGateProbeRefreshIsRateLimited(t *testing.T) {
-	s := &gateTestSource{tier: policy.Safe}
+	s := &gateTestSource{tier: policy.Tier("safe")}
 	g := newTestAnnotationGate(s)
 	defer g.Close()
 	if err := g.EnsureProvisioned(context.Background()); err != nil {
@@ -268,8 +268,8 @@ func TestAnnotationGateProbeRefreshIsRateLimited(t *testing.T) {
 
 // The refresh's own timeout is a real control-plane failure and fails closed.
 func TestAnnotationGateRefreshTimeoutFailsClosed(t *testing.T) {
-	s := &gateTestSource{tier: policy.Safe}
-	g := NewAnnotationGate(&policy.Policy{AnnotationTiers: map[policy.Tier]bool{policy.Safe: true}}, s, func(context.Context, Creds, *policy.Policy) (db.Backend, error) { return &gateTestBackend{}, nil }, 50*time.Millisecond, nil)
+	s := &gateTestSource{tier: policy.Tier("safe")}
+	g := NewAnnotationGate(&policy.Policy{AnnotationTiers: map[policy.Tier]bool{policy.Tier("safe"): true}}, s, func(context.Context, Creds, *policy.Policy) (db.Backend, error) { return &gateTestBackend{}, nil }, 50*time.Millisecond, nil)
 	defer g.Close()
 	if err := g.Refresh(context.Background()); err != nil {
 		t.Fatal(err)

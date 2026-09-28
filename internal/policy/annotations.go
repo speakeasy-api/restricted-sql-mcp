@@ -11,18 +11,20 @@ import (
 	"strings"
 )
 
-// Tier describes the reviewed contents of an entire column. No tier is inherited.
+// Tier is the data classification recorded on an entire column. The
+// vocabulary belongs to the database owner, not to this server: the server
+// only knows which classes a deployment allows. Every other class, and any
+// missing or malformed annotation, is denied. No tier is inherited.
 type Tier string
 
-const (
-	Safe       Tier = "safe"
-	PII        Tier = "pii"
-	Content    Tier = "content"
-	Secret     Tier = "secret"
-	Restricted Tier = "restricted"
+var (
+	tierName = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
+	tierLine = regexp.MustCompile(`^[\t ]*@access:[\t ]*([^\t ]+)[\t ]*$`)
 )
 
-var tierLine = regexp.MustCompile(`^[\t ]*@access:[\t ]*(safe|pii|content|secret|restricted)[\t ]*$`)
+// ValidTierName reports whether s is a well-formed class name: lowercase
+// words joined by single hyphens, at most 63 characters.
+func ValidTierName(s string) bool { return len(s) <= 63 && tierName.MatchString(s) }
 
 // ParseAccessTier counts malformed markers too, so a valid line cannot hide a
 // second, invalid decision. The marker must be the last nonempty comment line.
@@ -45,7 +47,7 @@ func ParseAccessTier(comment string) (Tier, error) {
 		return "", fmt.Errorf("duplicate access annotations")
 	}
 	match := tierLine.FindStringSubmatch(lines[index])
-	if len(match) != 2 || index != last {
+	if len(match) != 2 || index != last || !ValidTierName(match[1]) {
 		return "", fmt.Errorf("invalid access annotation")
 	}
 	return Tier(match[1]), nil
@@ -182,7 +184,7 @@ func (p *Policy) ColumnDenial(t TableRef, name string) string {
 	if c.Denial != "" {
 		return c.Denial
 	}
-	if (c.Tier != Safe && c.Tier != PII) || !p.AnnotationTiers[c.Tier] {
+	if !p.AnnotationTiers[c.Tier] {
 		return fmt.Sprintf("tier %q is not selected", c.Tier)
 	}
 	return ""

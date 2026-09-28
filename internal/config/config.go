@@ -67,7 +67,7 @@ func ParseFlags(args []string, getenv func(string) string, version string) (*Con
 	fs.StringVar(&dialect, "dialect", "", "database dialect: postgres|clickhouse (required)")
 	fs.StringVar(&c.DSN, "dsn", "", "database connection URL (or env DATABASE_URL; required)")
 	fs.StringVar(&readTables, "read-tables", "", "comma-separated tables readable by the read tools (required unless using columns-from-annotations)")
-	fs.StringVar(&annotationTiers, "columns-from-annotations", "", "read explicitly annotated columns in selected tiers: safe or safe,pii (requires connection-level-security)")
+	fs.StringVar(&annotationTiers, "columns-from-annotations", "", "comma-separated @access classes whose columns are readable, e.g. safe or safe,pii; all other classes are denied (requires connection-level-security)")
 	fs.DurationVar(&c.AnnotationRefreshInterval, "annotation-refresh-interval", 30*time.Second, "periodic catalog and column-grant refresh interval")
 	fs.DurationVar(&c.AnnotationRefreshTimeout, "annotation-refresh-timeout", 10*time.Second, "maximum catalog/grant refresh and drain duration")
 	fs.StringVar(&writeTables, "write-tables", "", "comma-separated tables writable by the write tools (optional)")
@@ -101,7 +101,7 @@ func ParseFlags(args []string, getenv func(string) string, version string) (*Con
 		}
 	})
 	if annotationSet && len(c.AnnotationTiers) == 0 {
-		return nil, errors.New("--columns-from-annotations requires safe and/or pii")
+		return nil, errors.New("--columns-from-annotations requires at least one class")
 	}
 	c.WriteTables = splitList(writeTables)
 	if c.DSN == "" {
@@ -134,8 +134,8 @@ func (c *Config) Validate() error {
 	}
 	if len(c.AnnotationTiers) > 0 {
 		for _, tier := range c.AnnotationTiers {
-			if tier != "safe" && tier != "pii" {
-				return errors.New("--columns-from-annotations only permits safe and pii")
+			if !policy.ValidTierName(tier) {
+				return fmt.Errorf("--columns-from-annotations: invalid class name %q (lowercase words joined by hyphens)", tier)
 			}
 		}
 		if len(c.ReadTables) > 0 {

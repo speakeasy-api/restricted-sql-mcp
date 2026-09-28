@@ -1,39 +1,52 @@
 # Column access annotations
 
-`--columns-from-annotations safe` enables read-only access to reviewed columns
-across application schemas. `safe,pii` also selects reviewed identity/contact
-columns. The mode requires `--connection-level-security` and cannot be combined
+`--columns-from-annotations <classes>` enables read-only access to columns whose
+`@access` class is in the comma-separated list, for example `safe` or
+`safe,pii`. Every other class, and every missing or malformed marker, is
+denied. The mode requires `--connection-level-security` and cannot be combined
 with `--read-tables`, `--write-tables`, or write tools. Omit the annotation flag
 to keep the existing static table policy.
 
 ## Classifying a column
+
+The class vocabulary belongs to the database owner, not to this server. Column
+classifications are ordinary schema documentation that other tools (redaction,
+retention, exports, reviews) can use too; the server only needs to know which
+classes a deployment allows. Class names are lowercase words joined by single
+hyphens, at most 63 characters.
 
 Append exactly one access marker as the last nonempty line of its comment:
 
 ```sql
 -- PostgreSQL
 COMMENT ON COLUMN public.messages.id IS E'Message identifier\n@access: safe';
-COMMENT ON COLUMN public.messages.body IS '@access: content';
+COMMENT ON COLUMN public.messages.body IS '@access: opaque-restricted';
 COMMENT ON COLUMN public.messages.email IS '@access: pii';
 
 -- ClickHouse
 ALTER TABLE app.messages COMMENT COLUMN id '@access: safe';
-ALTER TABLE app.messages COMMENT COLUMN body '@access: content';
+ALTER TABLE app.messages COMMENT COLUMN body '@access: opaque-restricted';
 ```
 
 In PostgreSQL use an actual newline in the comment or an `E'...\n...'` string
-when preserving existing prose. Marker names and tiers are case-sensitive.
+when preserving existing prose. Markers and class names are case-sensitive.
 CRLF, horizontal whitespace around the marker, and trailing empty lines are
-accepted. Duplicate markers, unknown tiers, trailing prose, and missing markers
-deny the column. A valid marker followed by an invalid marker is still denied.
+accepted. Duplicate markers, malformed class names, trailing prose, and missing
+markers deny the column. A valid marker followed by an invalid marker is still
+denied.
 
-| Tier | Meaning | Selectable |
+An example vocabulary (Gram's):
+
+| Class | Meaning | Typical allowlist |
 |---|---|---|
-| `safe` | Reviewed operational/organizational metadata | With `safe` |
-| `pii` | Reviewed identity/contact fields | With `pii` |
-| `content` | User/LLM content, summaries, embeddings, tool inputs/outputs | Never |
+| `safe` | Reviewed operational/organizational metadata | Allowed |
+| `pii` | Reviewed identity/contact fields | Opt-in |
 | `secret` | Credentials, tokens, keys, cookies, credential hashes | Never |
-| `restricted` | Other sensitive, mixed, or uncertain data, including PHI | Never |
+| `restricted` | Known regulated or sensitive data, including PHI | Never |
+| `opaque-restricted` | Arbitrary customer, user or model content that may hold restricted data | Never |
+
+Only list classes whose every column is fit to expose: the allowlist is the
+only thing that decides readability.
 
 Permissions apply to the whole column, including JSON, array and map contents.
 Column names are not classification evidence. No table, schema, or database

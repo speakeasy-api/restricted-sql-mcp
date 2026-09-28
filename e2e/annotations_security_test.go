@@ -18,8 +18,8 @@ import (
 func TestAnnotationsFlagValidation(t *testing.T) {
 	base := []string{"--dialect", "postgres", "--dsn", pgDSN(), "--columns-from-annotations", "safe", "--connection-level-security"}
 	for name, args := range map[string][]string{
-		"denied tier":           append(append([]string{}, base...), "--columns-from-annotations", "safe,content"),
-		"unknown tier":          append(append([]string{}, base...), "--columns-from-annotations", "unknown"),
+		"uppercase class":       append(append([]string{}, base...), "--columns-from-annotations", "Safe"),
+		"malformed class":       append(append([]string{}, base...), "--columns-from-annotations", "safe,opaque_restricted"),
 		"empty selection":       append(append([]string{}, base...), "--columns-from-annotations", ""),
 		"static allowlist":      append(append([]string{}, base...), "--read-tables", "records"),
 		"write table":           append(append([]string{}, base...), "--write-tables", "records"),
@@ -197,7 +197,7 @@ func TestAnnotationsDirectDatabaseCredentials(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			pol := (&policy.Policy{Dialect: dialect, DefaultSchema: schema, AnnotationTiers: map[policy.Tier]bool{policy.Safe: true}, StatementTimeout: time.Second, MaxRows: 100}).WithCatalog(catalog)
+			pol := (&policy.Policy{Dialect: dialect, DefaultSchema: schema, AnnotationTiers: map[policy.Tier]bool{policy.Tier("safe"): true}, StatementTimeout: time.Second, MaxRows: 100}).WithCatalog(catalog)
 			creds, err := source.Reconcile(ctx, pol)
 			if err != nil {
 				t.Fatal(err)

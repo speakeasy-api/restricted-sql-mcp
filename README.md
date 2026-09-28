@@ -47,7 +47,7 @@ restrictedsql-mcp \
   --dialect postgres|clickhouse          (required)
   --dsn <url>                            (or env DATABASE_URL; required)
   --read-tables schema.t1,schema.t2      (required in static table mode)
-  --columns-from-annotations safe        (alternative to read-tables; safe and/or pii;
+  --columns-from-annotations safe        (alternative to read-tables; readable @access classes, e.g. safe or safe,pii;
                                           requires connection-level-security; read-only)
   --annotation-refresh-interval 30s      (annotation catalog/grant refresh; HTTP and stdio)
   --annotation-refresh-timeout 10s       (bounds refresh and active-query draining)
@@ -102,7 +102,7 @@ restrictedsql-mcp --dialect postgres \
   --columns-from-annotations safe --connection-level-security
 ```
 
-Use `safe,pii` only when the deployment should expose reviewed identity columns.
+Class names are defined by the database owner; the server reads only the classes listed and denies all others. Use `safe,pii` only when the deployment should expose reviewed identity columns.
 `content`, `secret`, and `restricted` cannot be selected. Missing or malformed
 column comments deny access. Existing `--read-tables` deployments keep their
 current behavior.

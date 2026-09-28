@@ -109,7 +109,7 @@ func TestPostgresResolutionReviewDifferential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pol := (&policy.Policy{Dialect: policy.Postgres, DefaultSchema: schema, AnnotationTiers: map[policy.Tier]bool{policy.Safe: true}}).WithCatalog(cat)
+	pol := (&policy.Policy{Dialect: policy.Postgres, DefaultSchema: schema, AnnotationTiers: map[policy.Tier]bool{policy.Tier("safe"): true}}).WithCatalog(cat)
 	for _, tc := range cases {
 		t.Run(tc.Name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
