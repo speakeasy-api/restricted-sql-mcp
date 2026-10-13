@@ -25,6 +25,7 @@ import (
 	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/dbsec"
 	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/health"
 	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/mcpserver"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/multidb"
 	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
 	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard"
 	chguard "github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard/clickhouse"
@@ -42,6 +43,11 @@ const shutdownGrace = 10 * time.Second
 // bootProvisionTimeout bounds the boot-time provisioning attempt; a failure
 // is retried by /readyz and by tool calls, never fatal.
 const bootProvisionTimeout = 10 * time.Second
+
+// columnRefreshInterval is how often the catalog column snapshots of the
+// additional databases of a --databases server are reloaded; the default
+// database's snapshot is reloaded by /readyz.
+const columnRefreshInterval = 30 * time.Second
 
 // backendCloseTimeout bounds closing the pool at shutdown; connections stuck
 // on an unresponsive database are abandoned to the exiting process.
@@ -104,13 +110,43 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 		}
 	}
 
+	defaultDatabase := ""
+	if pol.Dialect == policy.Postgres {
+		defaultDatabase = cfg.DefaultDatabase()
+	}
+	var databases *multidb.Manager
+	if cfg.DatabasesRE != nil {
+		databases = multidb.New(multidb.Options{
+			BootstrapDSN: cfg.DSN,
+			Default:      &multidb.Instance{Name: defaultDatabase, Policy: pol, Backend: backend},
+			Pattern:      cfg.DatabasesRE,
+			Open: func(ctx context.Context, name string) (*multidb.Instance, error) {
+				return openDatabase(ctx, cfg, name, logger)
+			},
+			Txns:   registry,
+			Logger: logger,
+		})
+		defer databases.Close()
+		go databases.RunColumnRefresh(ctx, columnRefreshInterval)
+		listCtx, cancel := context.WithTimeout(ctx, bootProvisionTimeout)
+		served, err := databases.Refresh(listCtx)
+		cancel()
+		if err != nil {
+			logger.Warn("could not list databases at boot; list_databases and tool calls will retry", "error", err.Error())
+		} else {
+			logger.Info("multi-database mode", "default_database", defaultDatabase, "databases_pattern", cfg.Databases, "served_databases", served)
+		}
+	}
+
 	server := mcpserver.New(mcpserver.Deps{
-		Policy:  pol,
-		Guard:   guard,
-		Backend: backend,
-		Txns:    registry,
-		Logger:  logger,
-		Version: cfg.Version,
+		Policy:          pol,
+		Guard:           guard,
+		Backend:         backend,
+		Txns:            registry,
+		Logger:          logger,
+		Version:         cfg.Version,
+		DefaultDatabase: defaultDatabase,
+		Databases:       databases,
 	})
 
 	logger.Info("restrictedsql-mcp starting",
@@ -262,6 +298,63 @@ func localMCPURL(listen string) string {
 		host = "127.0.0.1"
 	}
 	return "http://" + net.JoinHostPort(host, port) + "/mcp"
+}
+
+// openDatabase opens one additional database of a --databases server: a
+// fresh policy with schema wildcards expanded against that database (schemas
+// differ between databases), and, with connection-level security, its own
+// login roles named from a per-database prefix since roles are cluster-wide.
+// Readiness is not gated on it; an error is returned to the tool call that
+// asked and the next call retries.
+func openDatabase(ctx context.Context, cfg *config.Config, name string, logger *slog.Logger) (*multidb.Instance, error) {
+	dsn, err := dbsec.WithDatabase(cfg.DSN, name)
+	if err != nil {
+		return nil, err
+	}
+	pol, err := cfg.BuildPolicy()
+	if err != nil {
+		return nil, err
+	}
+	if err := dbsec.ExpandSchemas(ctx, dsn, pol, cfg.ReadSchemas, cfg.WriteSchemas); err != nil {
+		return nil, err
+	}
+	logger = logger.With("database", name)
+	inst := &multidb.Instance{Name: name, Policy: pol}
+	if cfg.ConnectionLevelSecurity {
+		prefix := dbsec.DatabaseRolePrefix(cfg.SecurityRolePrefix, name)
+		prov := &dbsec.PostgresProvisioner{DSN: dsn, Policy: pol, Prefix: prefix, Logger: logger}
+		build := func(ctx context.Context, creds dbsec.Creds) (db.Backend, error) {
+			return pgbackend.NewWithWriteDSN(ctx, creds.ReadDSN, creds.WriteDSN, pol, logger, pgbackend.WithMaxOpenTxns(cfg.MaxOpenTxns))
+		}
+		gate := dbsec.NewGate(policy.Postgres, prov, build, logger)
+		if err := gate.EnsureProvisioned(ctx); err != nil {
+			closeBackend(gate, logger)
+			return nil, err
+		}
+		inst.Backend, inst.Roles = gate, prov.Roles()
+	} else {
+		backend, err := pgbackend.New(ctx, dsn, pol, logger, pgbackend.WithMaxOpenTxns(cfg.MaxOpenTxns))
+		if err != nil {
+			return nil, err
+		}
+		inst.Backend = backend
+	}
+	// The guard resolves column references from the catalog snapshot; an
+	// instance without one would fail closed, so a failed load fails the open.
+	err = inst.Backend.Ping(ctx)
+	if loader, ok := inst.Backend.(db.ColumnLoader); ok && err == nil {
+		err = loader.RefreshColumns(ctx)
+	}
+	if err != nil {
+		closeBackend(inst.Backend, logger)
+		if len(inst.Roles) > 0 {
+			if _, dropErr := dbsec.DropRoles(context.WithoutCancel(ctx), cfg.DSN, inst.Roles); dropErr != nil {
+				logger.Warn("dropping roles after a failed open failed", "roles", inst.Roles, "error", dropErr.Error())
+			}
+		}
+		return nil, err
+	}
+	return inst, nil
 }
 
 // selectDialect picks the guard and backend for the configured dialect. With

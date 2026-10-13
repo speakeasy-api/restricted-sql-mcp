@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/db"
@@ -15,8 +16,9 @@ import (
 
 // ExecuteReadInput is the input of execute_sql_readonly.
 type ExecuteReadInput struct {
-	SQL     string `json:"sql" jsonschema:"one SELECT-like statement over permitted tables and columns"`
-	MaxRows int    `json:"max_rows,omitempty" jsonschema:"maximum rows to return; capped by the server limit"`
+	SQL      string `json:"sql" jsonschema:"one SELECT-like statement over permitted tables and columns"`
+	MaxRows  int    `json:"max_rows,omitempty" jsonschema:"maximum rows to return; capped by the server limit"`
+	Database string `json:"database,omitempty" jsonschema:"database to run against; defaults to the server's default database (see list_databases)"`
 }
 
 func (s *server) registerReadTools(srv *mcp.Server) {
@@ -29,11 +31,16 @@ func (s *server) registerReadTools(srv *mcp.Server) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "execute_sql_readonly",
 		Description: description,
+		InputSchema: s.inputSchema(jsonschema.For[ExecuteReadInput](nil)),
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.executeReadonly)
 }
 
 func (s *server) executeReadonly(ctx context.Context, _ *mcp.CallToolRequest, in ExecuteReadInput) (*mcp.CallToolResult, QueryOutput, error) {
+	s, err := s.target(ctx, in.Database)
+	if err != nil {
+		return fail[QueryOutput](err)
+	}
 	s, ctx, finish, admitErr := s.admitted(ctx)
 	if admitErr != nil {
 		return fail[QueryOutput](admitErr)
@@ -75,6 +82,7 @@ type ExplainInput struct {
 	SQL                 string                   `json:"sql" jsonschema:"one SELECT-like statement over allowlisted tables"`
 	Analyze             bool                     `json:"analyze,omitempty" jsonschema:"execute the statement and include actual timings"`
 	HypotheticalIndexes []HypotheticalIndexInput `json:"hypothetical_indexes,omitempty" jsonschema:"Postgres only: indexes to simulate with hypopg; cannot be combined with analyze"`
+	Database            string                   `json:"database,omitempty" jsonschema:"database to run against; defaults to the server's default database (see list_databases)"`
 }
 
 // ExplainOutput is the output of explain_query.
@@ -91,11 +99,16 @@ func (s *server) registerExplainTool(srv *mcp.Server) {
 			"analyze=true to execute it and include actual timings). On Postgres you can pass hypothetical_indexes to " +
 			"see how the plan would change if those indexes existed; this needs the hypopg extension and cannot be " +
 			"combined with analyze.",
+		InputSchema: s.inputSchema(jsonschema.For[ExplainInput](nil)),
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.explain)
 }
 
 func (s *server) explain(ctx context.Context, _ *mcp.CallToolRequest, in ExplainInput) (*mcp.CallToolResult, ExplainOutput, error) {
+	s, err := s.target(ctx, in.Database)
+	if err != nil {
+		return fail[ExplainOutput](err)
+	}
 	s, ctx, finish, admitErr := s.admitted(ctx)
 	if admitErr != nil {
 		return fail[ExplainOutput](admitErr)

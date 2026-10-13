@@ -6,18 +6,23 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/db"
 	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard"
 )
 
-// BeginInput is the (empty) input of begin_transaction.
-type BeginInput struct{}
+// BeginInput is the input of begin_transaction.
+type BeginInput struct {
+	Database string `json:"database,omitempty" jsonschema:"database to open the transaction in; defaults to the server's default database (see list_databases). Every statement of the transaction runs there"`
+}
 
 // BeginOutput is the output of begin_transaction.
 type BeginOutput struct {
 	TransactionID string `json:"transaction_id" jsonschema:"opaque id to pass to execute_sql_write, commit_transaction, rollback_transaction"`
 	ExpiresAt     string `json:"expires_at" jsonschema:"RFC3339 time at which the transaction is rolled back if left idle"`
+	Database      string `json:"database,omitempty" jsonschema:"database the transaction runs in"`
 }
 
 // ExecuteWriteInput is the input of execute_sql_write.
@@ -51,6 +56,7 @@ func (s *server) registerWriteTools(srv *mcp.Server) {
 		Description: "Open a write transaction on a dedicated connection and return its transaction_id. Every write " +
 			"must run inside a transaction so you can check rows_affected and re-select the changed rows before " +
 			"committing. Idle transactions are rolled back automatically after the configured timeout.",
+		InputSchema: s.inputSchema(jsonschema.For[BeginInput](nil)),
 	}, s.beginTransaction)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "execute_sql_write",
@@ -71,18 +77,40 @@ func (s *server) registerWriteTools(srv *mcp.Server) {
 
 func boolPtr(b bool) *bool { return &b }
 
-func (s *server) beginTransaction(ctx context.Context, _ *mcp.CallToolRequest, _ BeginInput) (*mcp.CallToolResult, BeginOutput, error) {
+func (s *server) beginTransaction(ctx context.Context, _ *mcp.CallToolRequest, in BeginInput) (*mcp.CallToolResult, BeginOutput, error) {
 	if s.Txns == nil {
+		return fail[BeginOutput](errNoTxBackend)
+	}
+	s, err := s.target(ctx, in.Database)
+	if err != nil {
+		return fail[BeginOutput](err)
+	}
+	txb, ok := s.Backend.(db.TxBackend)
+	if !ok {
 		return fail[BeginOutput](errNoTxBackend)
 	}
 	ctx, cancel := s.callContext(ctx)
 	defer cancel()
-	id, expires, err := s.Txns.Begin(ctx)
+	id, expires, err := s.Txns.BeginOn(ctx, txb, s.database)
 	if err != nil {
 		s.Logger.DebugContext(ctx, "begin_transaction failed", "error", err.Error())
 		return fail[BeginOutput](fmt.Errorf("begin_transaction failed: %w", err))
 	}
-	return nil, BeginOutput{TransactionID: id, ExpiresAt: expires.UTC().Format(time.RFC3339)}, nil
+	return nil, BeginOutput{TransactionID: id, ExpiresAt: expires.UTC().Format(time.RFC3339), Database: s.database}, nil
+}
+
+// transaction resolves the database a transaction was begun in and returns
+// the request-scoped server for it, so the statement is checked against that
+// database's policy. The caller never names the database.
+func (s *server) transaction(ctx context.Context, id string) (*server, error) {
+	if id == "" {
+		return nil, errors.New("transaction_id is required")
+	}
+	database, err := s.Txns.Database(id)
+	if err != nil {
+		return nil, err
+	}
+	return s.target(ctx, database)
 }
 
 func (s *server) executeWrite(ctx context.Context, _ *mcp.CallToolRequest, in ExecuteWriteInput) (*mcp.CallToolResult, ExecuteWriteOutput, error) {
@@ -90,8 +118,9 @@ func (s *server) executeWrite(ctx context.Context, _ *mcp.CallToolRequest, in Ex
 	if s.Txns == nil {
 		return fail[ExecuteWriteOutput](errNoTxBackend)
 	}
-	if in.TransactionID == "" {
-		return fail[ExecuteWriteOutput](errors.New("transaction_id is required"))
+	s, err := s.transaction(ctx, in.TransactionID)
+	if err != nil {
+		return fail[ExecuteWriteOutput](fmt.Errorf("execute_sql_write failed: %w", err))
 	}
 	checked, err := s.check(ctx, tool, in.SQL, sqlguard.ModeWrite)
 	if err != nil {
@@ -117,6 +146,7 @@ func (s *server) commitTransaction(ctx context.Context, _ *mcp.CallToolRequest, 
 	if s.Txns == nil {
 		return fail[TxStatusOutput](errNoTxBackend)
 	}
+	s = s.withTxnLogger(in.TransactionID)
 	ctx, cancel := s.callContext(ctx)
 	defer cancel()
 	if err := s.Txns.Commit(ctx, in.TransactionID); err != nil {
@@ -130,6 +160,7 @@ func (s *server) rollbackTransaction(ctx context.Context, _ *mcp.CallToolRequest
 	if s.Txns == nil {
 		return fail[TxStatusOutput](errNoTxBackend)
 	}
+	s = s.withTxnLogger(in.TransactionID)
 	ctx, cancel := s.callContext(ctx)
 	defer cancel()
 	if err := s.Txns.Rollback(ctx, in.TransactionID); err != nil {
@@ -137,4 +168,17 @@ func (s *server) rollbackTransaction(ctx context.Context, _ *mcp.CallToolRequest
 		return fail[TxStatusOutput](fmt.Errorf("rollback_transaction failed: %w", err))
 	}
 	return nil, TxStatusOutput{Status: "rolled_back"}, nil
+}
+
+// withTxnLogger tags the logger with the transaction's database. Commit and
+// rollback need no policy, so the database is not resolved further.
+func (s *server) withTxnLogger(id string) *server {
+	database, err := s.Txns.Database(id)
+	if err != nil || database == "" {
+		return s
+	}
+	request := *s
+	request.database = database
+	request.Logger = s.Logger.With("database", database)
+	return &request
 }

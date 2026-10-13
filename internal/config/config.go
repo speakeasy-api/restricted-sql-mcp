@@ -47,6 +47,12 @@ type Config struct {
 	ConnectionLevelSecurity bool
 	SecurityRolePrefix      string
 
+	// Databases, when set, serves every database on the same Postgres server
+	// whose name matches it, in addition to the DSN's own database (which
+	// stays the default). DatabasesRE is its compiled form.
+	Databases   string
+	DatabasesRE *regexp.Regexp
+
 	// Tunnel settings come from the environment, never from flags, so they do
 	// not show up in process listings.
 	TunnelGatewayURL     string
@@ -89,6 +95,7 @@ func ParseFlags(args []string, getenv func(string) string, version string) (*Con
 	fs.StringVar(&c.LogLevel, "log-level", "info", "log level: debug|info|warn|error")
 	fs.BoolVar(&c.ConnectionLevelSecurity, "connection-level-security", false, "provision least-privilege database roles from the (bootstrap) DSN at boot and run all tool traffic as those roles")
 	fs.StringVar(&c.SecurityRolePrefix, "security-role-prefix", "restrictedsql", "prefix of the roles provisioned by --connection-level-security (<prefix>_ro, <prefix>_rw)")
+	fs.StringVar(&c.Databases, "databases", "", "regular expression naming further databases on the same server to serve alongside the DSN's database (postgres static table mode only); tools take an optional database argument")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -231,6 +238,22 @@ func (c *Config) Validate() error {
 			return errors.New("--connection-level-security requires a URL-form DSN (scheme://user:password@host:port/database)")
 		}
 	}
+	if c.Databases != "" {
+		if c.Dialect != policy.Postgres {
+			return errors.New("--databases is supported on postgres only")
+		}
+		if len(c.AnnotationTiers) > 0 {
+			return errors.New("--databases is not supported with --columns-from-annotations")
+		}
+		re, err := regexp.Compile(c.Databases)
+		if err != nil {
+			return fmt.Errorf("--databases: invalid regular expression: %w", err)
+		}
+		c.DatabasesRE = re
+		if c.DefaultDatabase() == "" {
+			return errors.New("--databases requires a URL-form DSN that names its database (postgres://user:password@host:port/database)")
+		}
+	}
 	switch strings.ToLower(c.LogLevel) {
 	case "debug", "info", "warn", "error":
 		c.LogLevel = strings.ToLower(c.LogLevel)
@@ -238,6 +261,16 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("--log-level %q is not supported (debug|info|warn|error)", c.LogLevel)
 	}
 	return nil
+}
+
+// DefaultDatabase is the database named in the path of a URL-form DSN, or
+// "" when the DSN does not name one.
+func (c *Config) DefaultDatabase() string {
+	u, err := url.Parse(c.DSN)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return strings.TrimPrefix(u.Path, "/")
 }
 
 // BuildPolicy resolves the table lists into a Policy.

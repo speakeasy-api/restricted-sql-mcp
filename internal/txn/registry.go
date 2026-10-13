@@ -31,6 +31,7 @@ type entry struct {
 	// each other.
 	mu       sync.Mutex
 	tx       db.Tx
+	database string // fixed at Begin; empty in single-database use
 	lastUsed time.Time
 	closed   bool
 }
@@ -61,25 +62,32 @@ func New(backend db.TxBackend, idle time.Duration, max int, logger *slog.Logger)
 	}
 }
 
-// Begin opens a transaction on a dedicated connection and returns its id and
-// the time it expires if left idle.
+// Begin opens a transaction on a dedicated connection of the registry's
+// backend and returns its id and the time it expires if left idle.
 func (r *Registry) Begin(ctx context.Context) (string, time.Time, error) {
+	return r.BeginOn(ctx, r.backend, "")
+}
+
+// BeginOn opens a transaction on backend and records database as the
+// database it belongs to. The open-transaction cap is shared by every
+// database. The recorded database never changes; see Database.
+func (r *Registry) BeginOn(ctx context.Context, backend db.TxBackend, database string) (string, time.Time, error) {
 	r.mu.Lock()
 	if len(r.entries)+r.pending >= r.max {
 		open := len(r.entries)
 		r.mu.Unlock()
-		r.logger.DebugContext(ctx, "txn.begin rejected", "open", open, "max", r.max)
+		r.logger.DebugContext(ctx, "txn.begin rejected", "database", database, "open", open, "max", r.max)
 		return "", time.Time{}, fmt.Errorf("%w (max %d)", ErrTooMany, r.max)
 	}
 	r.pending++
 	r.mu.Unlock()
 
-	tx, err := r.backend.Begin(ctx)
+	tx, err := backend.Begin(ctx)
 	r.mu.Lock()
 	r.pending--
 	if err != nil {
 		r.mu.Unlock()
-		r.logger.DebugContext(ctx, "txn.begin failed", "error", err.Error())
+		r.logger.DebugContext(ctx, "txn.begin failed", "database", database, "error", err.Error())
 		return "", time.Time{}, err
 	}
 	id, err := newID()
@@ -89,13 +97,28 @@ func (r *Registry) Begin(ctx context.Context) (string, time.Time, error) {
 		return "", time.Time{}, err
 	}
 	now := time.Now()
-	r.entries[id] = &entry{tx: tx, lastUsed: now}
+	r.entries[id] = &entry{tx: tx, database: database, lastUsed: now}
 	open := len(r.entries)
 	r.mu.Unlock()
 
 	expires := now.Add(r.idle)
-	r.logger.DebugContext(ctx, "txn.begin", "transaction_id", id, "expires_at", expires, "open", open)
+	r.logger.DebugContext(ctx, "txn.begin", "transaction_id", id, "database", database, "expires_at", expires, "open", open)
 	return id, expires, nil
+}
+
+// Database returns the database the transaction was begun in.
+func (r *Registry) Database(id string) (string, error) {
+	e := r.lookup(id)
+	if e == nil {
+		return "", ErrUnknown
+	}
+	return e.database, nil
+}
+
+// CloseDatabase rolls back and forgets every open transaction of database,
+// in parallel, waiting for calls in flight. It returns how many it closed.
+func (r *Registry) CloseDatabase(database string) int {
+	return r.closeWhere(func(e *entry) bool { return e.database == database }, "txn.closed_database")
 }
 
 // Exec runs canonical SQL inside the transaction and extends its idle
@@ -120,10 +143,10 @@ func (r *Registry) Exec(ctx context.Context, id, canonicalSQL string, maxRows in
 	res, err := e.tx.Exec(ctx, canonicalSQL, maxRows)
 	e.lastUsed = time.Now()
 	if err != nil {
-		r.logger.DebugContext(ctx, "txn.exec failed", "transaction_id", id, "duration", time.Since(start).String(), "error", err.Error())
+		r.logger.DebugContext(ctx, "txn.exec failed", "transaction_id", id, "database", e.database, "duration", time.Since(start).String(), "error", err.Error())
 		return nil, err
 	}
-	r.logger.DebugContext(ctx, "txn.exec", "transaction_id", id, "duration", time.Since(start).String(),
+	r.logger.DebugContext(ctx, "txn.exec", "transaction_id", id, "database", e.database, "duration", time.Since(start).String(),
 		"rows_affected", res.RowsAffected, "rows", len(res.Rows), "truncated", res.Truncated)
 	return res, nil
 }
@@ -173,10 +196,10 @@ func (r *Registry) finish(ctx context.Context, id string, e *entry, op string) e
 		err = e.tx.Rollback(ctx)
 	}
 	if err != nil {
-		r.logger.DebugContext(ctx, "txn."+op+" failed", "transaction_id", id, "open", open, "error", err.Error())
+		r.logger.DebugContext(ctx, "txn."+op+" failed", "transaction_id", id, "database", e.database, "open", open, "error", err.Error())
 		return err
 	}
-	r.logger.DebugContext(ctx, "txn."+op, "transaction_id", id, "open", open)
+	r.logger.DebugContext(ctx, "txn."+op, "transaction_id", id, "database", e.database, "open", open)
 	return nil
 }
 
@@ -223,7 +246,7 @@ func (r *Registry) reap() {
 			ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
 			err := r.finish(ctx, id, e, "rollback")
 			cancel()
-			r.logger.Info("txn.reaped", "transaction_id", id, "idle", idle.String(), "error", errString(err))
+			r.logger.Info("txn.reaped", "transaction_id", id, "database", e.database, "idle", idle.String(), "error", errString(err))
 		}
 		e.mu.Unlock()
 	}
@@ -233,10 +256,16 @@ func (r *Registry) reap() {
 // database costs closeTimeout once rather than per transaction. Calls in
 // flight are waited for.
 func (r *Registry) Close() {
+	r.closeWhere(func(*entry) bool { return true }, "txn.closed")
+}
+
+func (r *Registry) closeWhere(match func(*entry) bool, event string) int {
 	r.mu.Lock()
 	snapshot := make(map[string]*entry, len(r.entries))
 	for id, e := range r.entries {
-		snapshot[id] = e
+		if match(e) {
+			snapshot[id] = e
+		}
 	}
 	r.mu.Unlock()
 	var wg sync.WaitGroup
@@ -252,10 +281,11 @@ func (r *Registry) Close() {
 			ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
 			defer cancel()
 			err := r.finish(ctx, id, e, "rollback")
-			r.logger.Info("txn.closed", "transaction_id", id, "error", errString(err))
+			r.logger.Info(event, "transaction_id", id, "database", e.database, "error", errString(err))
 		}(id, e)
 	}
 	wg.Wait()
+	return len(snapshot)
 }
 
 // Open reports the number of open transactions.

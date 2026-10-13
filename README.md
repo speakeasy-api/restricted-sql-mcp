@@ -72,6 +72,9 @@ restrictedsql-mcp \
                                           see "Connection-level security")
   --security-role-prefix restrictedsql   (static roles: <prefix>_ro, <prefix>_rw;
                                           annotation mode adds a random process suffix)
+  --databases '^gram_preview_pr_'        (regex; also serve the matching databases of the same server
+                                          next to the DSN's database; postgres static table mode only;
+                                          see "Multi-database mode")
   --log-level info|debug
 ```
 
@@ -79,7 +82,8 @@ Boot semantics:
 
 - Invalid flags exit 2 with a message: unknown dialect, no DSN, no read tables, an
   unparsable table name, write tools on ClickHouse, write tools without
-  `--write-tables`, `--tunnel` without its environment, unknown transport.
+  `--write-tables`, `--tunnel` without its environment, unknown transport,
+  `--databases` with an invalid regex, on ClickHouse, or with `--columns-from-annotations`.
 - An unreachable database or a missing allowlisted table does **not** fail boot.
   The server starts, `/readyz` answers 503 with the reason, and readiness is
   re-evaluated on every probe.
@@ -181,6 +185,54 @@ roles, and an existing role with the same name keeps any role memberships it
 already had; grants that belong to other grantors cannot be revoked by the
 bootstrap role.
 
+## Multi-database mode
+
+`--databases <regex>` serves several databases of one Postgres server from one
+process, for example a main `gram` database plus preview databases
+`gram_preview_pr_<N>` that come and go:
+
+```sh
+restrictedsql-mcp --dialect postgres --dsn postgres://bootstrap:…@host:5432/gram \
+  --read-tables 'gram.*' --write-tables 'gram.*' --dangerously-add-write-tools \
+  --connection-level-security --databases '^gram_preview_pr_[0-9]+$'
+```
+
+- The DSN's database is always served and is the default. The DSN must be URL-form
+  and name its database. Further databases are those in `pg_database` that allow
+  connections, are not templates, that the bootstrap role may `CONNECT` to, and
+  whose name matches the regex (Go syntax, unanchored: use `^…$` for exact names).
+- The read and metadata tools and `begin_transaction` take an optional
+  `"database"` argument; omitted, they use the default database. `list_databases`
+  (registered only with `--databases`) re-reads the database list and returns
+  `{ "databases": [{ "name", "default", "open" }] }`. A name that is not served is
+  rejected with `unknown database "<name>"` (after one re-read of the list).
+- `execute_sql_write`, `commit_transaction` and `rollback_transaction` take no
+  database: a transaction stays in the database it was begun in, and its
+  statements are checked against that database's allowlist.
+  `--max-open-txns` is shared by all databases.
+- Each additional database is opened on first use: `--read-tables` /
+  `--write-tables` are resolved again against that database (so `<schema>.*`
+  expands to the tables it has when the database is opened; new tables need a
+  restart or a re-created database), and with `--connection-level-security` it gets
+  its own roles `<prefix>_<database>_ro` / `_rw` (roles are server-wide). Names that
+  are not plain lowercase identifiers, or that would exceed the 63-byte limit, are
+  sanitized, truncated and suffixed with a short hash. The default database keeps
+  `<prefix>_ro` / `<prefix>_rw`. The bootstrap role needs the same privileges in
+  every served database as in the default one. A failed open is reported to the
+  calling tool and retried by the next call.
+- When a served database disappears (a query or connection fails with
+  `3D000`, `57P0x`, a connection exception or a broken connection and
+  `pg_database` confirms it is gone, or it is missing when the list is re-read),
+  its open transactions are rolled back, its pools closed and its roles dropped
+  from the default database (logged as `roles of evicted database dropped`).
+  Later calls get `unknown database`. A terminated connection to a database that
+  still exists is not an eviction; the next call reconnects.
+- `/readyz` checks the default database only. The column snapshots of the other
+  open databases are reloaded every 30s and on each `list_databases` call.
+- Logs of tool calls carry a `database` field.
+- Not supported with ClickHouse or `--columns-from-annotations`. Pools are opened
+  per database and kept until the database disappears or the process exits.
+
 ## Tools
 
 All tools take and return JSON. Errors come back as MCP tool errors
@@ -188,6 +240,9 @@ All tools take and return JSON. Errors come back as MCP tool errors
 offending node, table, function, or type so the agent can self-correct.
 
 ### Read tools (always registered)
+
+With `--databases`, every read tool below also takes `"database"?: string`
+(see "Multi-database mode").
 
 **`execute_sql_readonly`** — `{ "sql": string, "max_rows"?: int }`
 Runs one SELECT-like statement against read-allowlisted tables. Returns
@@ -232,7 +287,8 @@ Writes are only possible inside an explicit transaction so the agent can inspect
 the effect before committing.
 
 **`begin_transaction`** — `{}` → `{ "transaction_id", "expires_at" }`
-Pins a dedicated connection. Fails once `--max-open-txns` is reached.
+Pins a dedicated connection. Fails once `--max-open-txns` is reached. With
+`--databases` it takes `"database"?: string` and also returns `"database"`.
 
 **`execute_sql_write`** — `{ "transaction_id", "sql", "max_rows"? }`
 Accepts INSERT / UPDATE / DELETE (RETURNING allowed) whose target is

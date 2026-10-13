@@ -5,14 +5,17 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/db"
 	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
 )
 
-// ListSchemasInput is the (empty) input of list_schemas.
-type ListSchemasInput struct{}
+// ListSchemasInput is the input of list_schemas.
+type ListSchemasInput struct {
+	Database string `json:"database,omitempty" jsonschema:"database to run against; defaults to the server's default database (see list_databases)"`
+}
 
 // ListSchemasOutput is the output of list_schemas.
 type ListSchemasOutput struct {
@@ -23,6 +26,7 @@ type ListSchemasOutput struct {
 type ListObjectsInput struct {
 	Schema     string `json:"schema" jsonschema:"schema (Postgres) or database (ClickHouse) to list"`
 	ObjectType string `json:"object_type,omitempty" jsonschema:"filter: table, view, sequence, or extension; all when omitted"`
+	Database   string `json:"database,omitempty" jsonschema:"database to run against; defaults to the server's default database (see list_databases)"`
 }
 
 // ListObjectsOutput is the output of list_objects.
@@ -32,8 +36,9 @@ type ListObjectsOutput struct {
 
 // ObjectDetailsInput is the input of get_object_details.
 type ObjectDetailsInput struct {
-	Schema string `json:"schema" jsonschema:"schema (Postgres) or database (ClickHouse) of the object"`
-	Name   string `json:"name" jsonschema:"table or view name"`
+	Schema   string `json:"schema" jsonschema:"schema (Postgres) or database (ClickHouse) of the object"`
+	Name     string `json:"name" jsonschema:"table or view name"`
+	Database string `json:"database,omitempty" jsonschema:"database to run against; defaults to the server's default database (see list_databases)"`
 }
 
 func (s *server) registerMetaTools(srv *mcp.Server) {
@@ -46,21 +51,28 @@ func (s *server) registerMetaTools(srv *mcp.Server) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_schemas",
 		Description: "List the schemas (Postgres) or databases (ClickHouse) present in the connected instance.",
+		InputSchema: s.inputSchema(jsonschema.For[ListSchemasInput](nil)),
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.listSchemas)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_objects",
 		Description: objectsDescription,
+		InputSchema: s.inputSchema(jsonschema.For[ListObjectsInput](nil)),
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.listObjects)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_object_details",
 		Description: detailsDescription,
+		InputSchema: s.inputSchema(jsonschema.For[ObjectDetailsInput](nil)),
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.objectDetails)
 }
 
-func (s *server) listSchemas(ctx context.Context, _ *mcp.CallToolRequest, _ ListSchemasInput) (*mcp.CallToolResult, ListSchemasOutput, error) {
+func (s *server) listSchemas(ctx context.Context, _ *mcp.CallToolRequest, in ListSchemasInput) (*mcp.CallToolResult, ListSchemasOutput, error) {
+	s, err := s.target(ctx, in.Database)
+	if err != nil {
+		return fail[ListSchemasOutput](err)
+	}
 	s, ctx, finish, admitErr := s.admitted(ctx)
 	if admitErr != nil {
 		return fail[ListSchemasOutput](admitErr)
@@ -86,6 +98,10 @@ func (s *server) listSchemas(ctx context.Context, _ *mcp.CallToolRequest, _ List
 }
 
 func (s *server) listObjects(ctx context.Context, _ *mcp.CallToolRequest, in ListObjectsInput) (*mcp.CallToolResult, ListObjectsOutput, error) {
+	s, err := s.target(ctx, in.Database)
+	if err != nil {
+		return fail[ListObjectsOutput](err)
+	}
 	s, ctx, finish, admitErr := s.admitted(ctx)
 	if admitErr != nil {
 		return fail[ListObjectsOutput](admitErr)
@@ -119,6 +135,10 @@ func (s *server) listObjects(ctx context.Context, _ *mcp.CallToolRequest, in Lis
 }
 
 func (s *server) objectDetails(ctx context.Context, _ *mcp.CallToolRequest, in ObjectDetailsInput) (*mcp.CallToolResult, db.ObjectDetails, error) {
+	s, err := s.target(ctx, in.Database)
+	if err != nil {
+		return fail[db.ObjectDetails](err)
+	}
 	s, ctx, finish, admitErr := s.admitted(ctx)
 	if admitErr != nil {
 		return fail[db.ObjectDetails](admitErr)

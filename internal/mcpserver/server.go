@@ -12,7 +12,10 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/google/jsonschema-go/jsonschema"
+
 	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/db"
+	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/multidb"
 	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
 	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard"
 	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/txn"
@@ -26,6 +29,12 @@ type Deps struct {
 	Txns    *txn.Registry // nil unless writes are enabled and the backend supports them
 	Logger  *slog.Logger
 	Version string
+	// DefaultDatabase names the DSN's database; a database argument equal to
+	// it (or empty) targets Policy and Backend. "" when the DSN names none.
+	DefaultDatabase string
+	// Databases serves further databases (--databases). When nil, the
+	// database argument is not advertised and list_databases is absent.
+	Databases *multidb.Manager
 }
 
 // callSlack is added to the statement timeout to bound a whole tool call,
@@ -37,6 +46,8 @@ const rawSQLLogLimit = 2000
 
 type server struct {
 	Deps
+	// database is the database a request-scoped copy targets (see target).
+	database string
 }
 
 // New builds the MCP server and registers the tools. Write tools are
@@ -56,7 +67,47 @@ func New(d Deps) *mcp.Server {
 	if d.Policy.WritesEnabled {
 		s.registerWriteTools(srv)
 	}
+	if d.Databases != nil {
+		s.registerDatabaseTools(srv)
+	}
 	return srv
+}
+
+// target returns a request-scoped copy of s for the named database: its
+// policy, its backend, and a logger that carries the database name. An
+// empty name is the default database.
+func (s *server) target(ctx context.Context, name string) (*server, error) {
+	request := *s
+	if s.Databases == nil {
+		if name != "" && name != s.DefaultDatabase {
+			return nil, fmt.Errorf("unknown database %q: this server serves only its configured database", name)
+		}
+		request.database = s.DefaultDatabase
+	} else {
+		inst, err := s.Databases.Get(ctx, name)
+		if err != nil {
+			s.Logger.DebugContext(ctx, "database rejected", "database", name, "error", err.Error())
+			return nil, err
+		}
+		request.database = inst.Name
+		request.Policy = inst.Policy
+		request.Backend = inst.Backend
+	}
+	if request.database != "" {
+		request.Logger = s.Logger.With("database", request.database)
+	}
+	return &request, nil
+}
+
+// inputSchema infers the input schema of T. Without --databases the
+// database property is removed, so single-database servers advertise exactly
+// the arguments they always had.
+func (s *server) inputSchema(schema *jsonschema.Schema, err error) any {
+	if err != nil || s.Databases != nil {
+		return nil // let the SDK infer it (and report any error) as before
+	}
+	delete(schema.Properties, "database")
+	return schema
 }
 
 func (s *server) instructions() string {
@@ -74,6 +125,11 @@ func (s *server) instructions() string {
 		b.WriteString("Writes are disabled. ")
 	}
 	fmt.Fprintf(&b, "Each call runs exactly one statement; rows are capped at %d.", s.Policy.MaxRows)
+	if s.Databases != nil {
+		fmt.Fprintf(&b, " Several databases of the same server are available: call list_databases and pass database to the read, metadata and begin_transaction tools (default %q). "+
+			"Each database has its own allowlist, resolved from its own schemas; the tables above are the default database's. "+
+			"A transaction stays in the database it was begun in.", s.Databases.Default())
+	}
 	return b.String()
 }
 
