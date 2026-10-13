@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -138,4 +139,41 @@ func TestPostgresAnnotationsPiiAndMigration(t *testing.T) {
 		}
 	}
 	s.mustCall(t, "execute_sql_readonly", map[string]any{"sql": "SELECT id FROM records"})
+}
+
+// TestPostgresAnnotationsNonSuperuserBootstrap boots with the production shape:
+// a bootstrap role that is not a superuser and does not own the tables, only
+// CREATEROLE plus USAGE and SELECT WITH GRANT OPTION. Unrelated objects in the
+// database (a sequence it has no rights on) must not stop provisioning.
+func TestPostgresAnnotationsNonSuperuserBootstrap(t *testing.T) {
+	c, schema := annotationPG(t)
+	ctx := context.Background()
+	role := fmt.Sprintf("bootstrap_%d", time.Now().UnixNano())
+	for _, sql := range []string{
+		"CREATE ROLE " + role + " LOGIN CREATEROLE NOSUPERUSER PASSWORD 'bootstrap-pw'",
+		"CREATE SEQUENCE " + schema + ".unrelated_seq",
+		"GRANT USAGE ON SCHEMA " + schema + " TO " + role + " WITH GRANT OPTION",
+		"GRANT SELECT ON ALL TABLES IN SCHEMA " + schema + " TO " + role + " WITH GRANT OPTION",
+	} {
+		if _, err := c.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, sql := range []string{"DROP OWNED BY " + role, "DROP ROLE " + role} {
+			if _, err := c.Exec(ctx, sql); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	u, err := url.Parse(pgDSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.User = url.UserPassword(role, "bootstrap-pw")
+	opts := annotationOpts(schema, "safe")
+	opts.DSN = u.String()
+	s := bootServer(t, opts)
+	s.mustCall(t, "execute_sql_readonly", map[string]any{"sql": "SELECT id,amount FROM records ORDER BY id"})
+	s.mustReject(t, "execute_sql_readonly", map[string]any{"sql": "SELECT content FROM records"}, "content")
 }

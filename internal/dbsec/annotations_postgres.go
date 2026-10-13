@@ -196,15 +196,15 @@ func (p *PostgresAnnotations) Reconcile(ctx context.Context, pol *policy.Policy)
 		return Creds{}, err
 	}
 	defer tx.Rollback(context.Background())
-	schemas, err := revocableSchemas(ctx, tx)
+	revokes, err := heldPrivilegeRevokes(ctx, tx, p.role())
 	if err != nil {
 		return Creds{}, err
 	}
-	stmts, err := roleStatements(p.role(), p.password, true, pol, schemas)
+	stmts, err := roleStatements(p.role(), p.password, true, pol, revokes)
 	if err != nil {
 		return Creds{}, err
 	}
-	stmts = append(stmts, plain("ALTER ROLE "+pgx.Identifier{p.role()}.Sanitize()+" NOBYPASSRLS"), plain("ALTER ROLE "+pgx.Identifier{p.role()}.Sanitize()+" SET search_path = pg_catalog"))
+	stmts = append(stmts, plain("ALTER ROLE "+pgx.Identifier{p.role()}.Sanitize()+" SET search_path = pg_catalog"))
 	for _, ref := range pol.AllTables() {
 		cols := pol.ReadableColumns(ref)
 		if len(cols) == 0 {
@@ -243,7 +243,7 @@ func (p *PostgresAnnotations) Verify(ctx context.Context, pol *policy.Policy) er
 }
 func verifyPGAnnotations(ctx context.Context, tx pgx.Tx, role string, pol *policy.Policy) error {
 	var broad bool
-	if err := tx.QueryRow(ctx, `SELECT rolsuper OR rolcreaterole OR rolcreatedb OR rolbypassrls OR EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members WHERE member=r.oid) FROM pg_catalog.pg_roles r WHERE rolname=$1`, role).Scan(&broad); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication OR rolbypassrls OR EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members WHERE member=r.oid) FROM pg_catalog.pg_roles r WHERE rolname=$1`, role).Scan(&broad); err != nil {
 		return err
 	}
 	if broad {
@@ -307,17 +307,12 @@ func (p *PostgresAnnotations) Close(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback(context.Background())
-	schemas, err := revocableSchemas(ctx, tx)
+	revokes, err := heldPrivilegeRevokes(ctx, tx, p.role())
 	if err != nil {
 		return err
 	}
-	for _, schema := range schemas {
-		sid := pgx.Identifier{schema}.Sanitize()
-		for _, sql := range []string{"REVOKE ALL ON ALL TABLES IN SCHEMA " + sid + " FROM " + role, "REVOKE ALL ON SCHEMA " + sid + " FROM " + role} {
-			if _, err := tx.Exec(ctx, sql); err != nil {
-				return err
-			}
-		}
+	if err := runStatements(ctx, tx, revokes); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(ctx, "DROP ROLE "+role); err != nil {
 		return err

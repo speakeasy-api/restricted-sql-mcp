@@ -80,15 +80,16 @@ func (p *PostgresProvisioner) Provision(ctx context.Context) (Creds, error) {
 	if err != nil {
 		return Creds{}, err
 	}
-	schemas, err := revocableSchemas(ctx, tx)
-	if err != nil {
-		return Creds{}, err
-	}
 	readTables := sortedRefs(p.Policy.ReadTables)
 	writeTables := sortedRefs(p.Policy.WriteTables)
 
 	summary := log.With("read_role", p.readRole())
-	roStmts, err := roleStatements(p.readRole(), roPass, useScram, p.Policy, schemas)
+	roRevokes, err := heldPrivilegeRevokes(ctx, tx, p.readRole())
+	if err != nil {
+		return Creds{}, err
+	}
+	revoked := len(roRevokes)
+	roStmts, err := roleStatements(p.readRole(), roPass, useScram, p.Policy, roRevokes)
 	if err != nil {
 		return Creds{}, err
 	}
@@ -104,7 +105,12 @@ func (p *PostgresProvisioner) Provision(ctx context.Context) (Creds, error) {
 		if err != nil {
 			return Creds{}, err
 		}
-		rwStmts, err := roleStatements(p.writeRole(), rwPass, useScram, p.Policy, schemas)
+		rwRevokes, err := heldPrivilegeRevokes(ctx, tx, p.writeRole())
+		if err != nil {
+			return Creds{}, err
+		}
+		revoked += len(rwRevokes)
+		rwStmts, err := roleStatements(p.writeRole(), rwPass, useScram, p.Policy, rwRevokes)
 		if err != nil {
 			return Creds{}, err
 		}
@@ -120,7 +126,7 @@ func (p *PostgresProvisioner) Provision(ctx context.Context) (Creds, error) {
 	if err := tx.Commit(ctx); err != nil {
 		return Creds{}, fmt.Errorf("commit provisioning transaction: %w", err)
 	}
-	summary.Info("postgres roles provisioned", "schemas_revoked", schemas, "password_rotated", true)
+	summary.Info("postgres roles provisioned", "stale_privileges_revoked", revoked, "password_rotated", true)
 
 	creds := Creds{}
 	if creds.ReadDSN, err = RewriteDSN(p.DSN, p.readRole(), roPass); err != nil {
@@ -145,32 +151,46 @@ func scramEnabled(ctx context.Context, tx pgx.Tx) (bool, error) {
 	return strings.EqualFold(enc, "scram-sha-256"), nil
 }
 
-// revocableSchemas lists the schemas the bootstrap role can address with
-// REVOKE ... IN SCHEMA (it needs USAGE to resolve them). System schemas are
-// skipped: nothing is ever granted there and revoking is a no-op.
-func revocableSchemas(ctx context.Context, tx pgx.Tx) ([]string, error) {
+// heldPrivilegeRevokes returns a REVOKE for every table, sequence, column
+// and schema whose ACL names role, so a role left over from an earlier
+// process starts empty. It names only objects the role holds privileges on,
+// so a bootstrap that does not own the schema never needs rights on unrelated
+// objects. Privileges another grantor gave are not removed; the grant audit
+// that follows rejects them.
+func heldPrivilegeRevokes(ctx context.Context, tx pgx.Tx, role string) ([]statement, error) {
 	const q = `
-SELECT nspname FROM pg_catalog.pg_namespace
-WHERE nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-  AND nspname NOT LIKE 'pg\_temp\_%'
-  AND nspname NOT LIKE 'pg\_toast\_temp\_%'
-  AND has_schema_privilege(nspname, 'USAGE')
-ORDER BY nspname`
-	rows, err := tx.Query(ctx, q)
+WITH r AS (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = $1)
+SELECT CASE c.relkind WHEN 'S' THEN 'SEQUENCE' ELSE 'TABLE' END, n.nspname, c.relname
+FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+  AND (EXISTS (SELECT 1 FROM pg_catalog.aclexplode(c.relacl) a WHERE a.grantee = (SELECT oid FROM r))
+    OR EXISTS (SELECT 1 FROM pg_catalog.pg_attribute att, pg_catalog.aclexplode(att.attacl) a
+               WHERE att.attrelid = c.oid AND a.grantee = (SELECT oid FROM r)))
+UNION ALL
+SELECT 'SCHEMA', n.nspname, ''
+FROM pg_catalog.pg_namespace n
+WHERE EXISTS (SELECT 1 FROM pg_catalog.aclexplode(n.nspacl) a WHERE a.grantee = (SELECT oid FROM r))
+ORDER BY 1, 2, 3`
+	rows, err := tx.Query(ctx, q, role)
 	if err != nil {
-		return nil, &StatementError{Statement: "SELECT nspname FROM pg_namespace", Err: err}
+		return nil, &StatementError{Statement: "SELECT privileges held by " + role, Err: err}
 	}
 	defer rows.Close()
-	var out []string
+	ident := pgx.Identifier{role}.Sanitize()
+	var out []statement
 	for rows.Next() {
-		var s string
-		if err := rows.Scan(&s); err != nil {
+		var kind, schema, name string
+		if err := rows.Scan(&kind, &schema, &name); err != nil {
 			return nil, err
 		}
-		out = append(out, s)
+		target := pgx.Identifier{schema}.Sanitize()
+		if kind != "SCHEMA" {
+			target = pgx.Identifier{schema, name}.Sanitize()
+		}
+		out = append(out, plain("REVOKE ALL ON "+kind+" "+target+" FROM "+ident))
 	}
 	if err := rows.Err(); err != nil {
-		return nil, &StatementError{Statement: "SELECT nspname FROM pg_namespace", Err: err}
+		return nil, &StatementError{Statement: "SELECT privileges held by " + role, Err: err}
 	}
 	return out, nil
 }
@@ -224,9 +244,12 @@ ORDER BY 1, 2`
 }
 
 // roleStatements creates or updates the role with a new password and the
-// hardening attributes, pins its session settings, and revokes everything
-// the bootstrap connection can address.
-func roleStatements(role, password string, useScram bool, pol *policy.Policy, schemas []string) ([]statement, error) {
+// hardening attributes, pins its session settings, and revokes every
+// privilege the role holds. It works for a superuser bootstrap and for a
+// plain CREATEROLE bootstrap: a non-superuser may not name SUPERUSER,
+// REPLICATION, BYPASSRLS or CREATEDB in ALTER ROLE, so for an existing role
+// it asserts those are off instead of setting them.
+func roleStatements(role, password string, useScram bool, pol *policy.Policy, revokes []statement) ([]statement, error) {
 	ident := pgx.Identifier{role}.Sanitize()
 	secret := password
 	if useScram {
@@ -236,32 +259,30 @@ func roleStatements(role, password string, useScram bool, pol *policy.Policy, sc
 		}
 		secret = verifier
 	}
-	const attrs = " WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION PASSWORD "
+	const createAttrs = " WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD "
+	const superAttrs = " WITH NOSUPERUSER NOCREATEDB NOREPLICATION NOBYPASSRLS"
+	const alterAttrs = " WITH LOGIN NOCREATEROLE NOINHERIT PASSWORD "
 	stmts := []statement{{
 		sql: fmt.Sprintf(`DO $rsq$ BEGIN
-IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = %s) THEN
-  EXECUTE 'ALTER ROLE ' || quote_ident(%s) || %s;
+IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = %[1]s) THEN
+  IF (SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user) THEN
+    EXECUTE 'ALTER ROLE ' || quote_ident(%[1]s) || %[2]s;
+  ELSIF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = %[1]s AND (rolsuper OR rolcreatedb OR rolreplication OR rolbypassrls)) THEN
+    RAISE EXCEPTION 'existing role %% has SUPERUSER, CREATEDB, REPLICATION or BYPASSRLS, which a non-superuser bootstrap cannot remove', %[1]s;
+  END IF;
+  EXECUTE 'ALTER ROLE ' || quote_ident(%[1]s) || %[3]s;
 ELSE
-  EXECUTE 'CREATE ROLE ' || quote_ident(%s) || %s;
+  EXECUTE 'CREATE ROLE ' || quote_ident(%[1]s) || %[4]s;
 END IF;
 END $rsq$`,
-			pgLiteral(role), pgLiteral(role), pgLiteral(attrs+pgLiteral(secret)),
-			pgLiteral(role), pgLiteral(attrs+pgLiteral(secret))),
-		display: "CREATE OR ALTER ROLE " + ident + attrs + "'<redacted>'",
+			pgLiteral(role), pgLiteral(superAttrs), pgLiteral(alterAttrs+pgLiteral(secret)), pgLiteral(createAttrs+pgLiteral(secret))),
+		display: "CREATE OR ALTER ROLE " + ident + createAttrs + "'<redacted>'",
 	}}
 	stmts = append(stmts,
 		plain("ALTER ROLE "+ident+" SET search_path = "+pgx.Identifier{pol.DefaultSchema}.Sanitize()),
 		plain(fmt.Sprintf("ALTER ROLE %s SET statement_timeout = %d", ident, pol.StatementTimeout.Milliseconds())),
 	)
-	for _, s := range schemas {
-		sid := pgx.Identifier{s}.Sanitize()
-		stmts = append(stmts,
-			plain("REVOKE ALL ON ALL TABLES IN SCHEMA "+sid+" FROM "+ident),
-			plain("REVOKE ALL ON ALL SEQUENCES IN SCHEMA "+sid+" FROM "+ident),
-			plain("REVOKE ALL ON SCHEMA "+sid+" FROM "+ident),
-		)
-	}
-	return stmts, nil
+	return append(stmts, revokes...), nil
 }
 
 // grantStatements grants USAGE on the schemas of read ∪ write, SELECT on
