@@ -23,18 +23,23 @@ type Config struct {
 	AnnotationRefreshTimeout  time.Duration
 	ReadTables                []string
 	WriteTables               []string
-	WritesEnabled             bool
-	DefaultSchema             string
-	Transport                 string // "http" | "stdio"
-	Listen                    string // "127.0.0.1:8080"
-	MaxRows                   int
-	StatementTimeout          time.Duration
-	TxnIdleTimeout            time.Duration
-	MaxOpenTxns               int
-	Tunnel                    bool
-	TunnelOnly                bool
-	LogLevel                  string
-	Version                   string
+	// ReadSchemas and WriteSchemas come from `<schema>.*` entries in
+	// --read-tables and --write-tables. Every table in them is added to the
+	// policy at boot (Postgres only); tables created later need a restart.
+	ReadSchemas      []string
+	WriteSchemas     []string
+	WritesEnabled    bool
+	DefaultSchema    string
+	Transport        string // "http" | "stdio"
+	Listen           string // "127.0.0.1:8080"
+	MaxRows          int
+	StatementTimeout time.Duration
+	TxnIdleTimeout   time.Duration
+	MaxOpenTxns      int
+	Tunnel           bool
+	TunnelOnly       bool
+	LogLevel         string
+	Version          string
 
 	// ConnectionLevelSecurity treats the DSN as a bootstrap connection used
 	// to provision least-privilege database roles; tool traffic then runs as
@@ -66,11 +71,11 @@ func ParseFlags(args []string, getenv func(string) string, version string) (*Con
 	var dialect, readTables, writeTables, annotationTiers string
 	fs.StringVar(&dialect, "dialect", "", "database dialect: postgres|clickhouse (required)")
 	fs.StringVar(&c.DSN, "dsn", "", "database connection URL (or env DATABASE_URL; required)")
-	fs.StringVar(&readTables, "read-tables", "", "comma-separated tables readable by the read tools (required unless using columns-from-annotations)")
+	fs.StringVar(&readTables, "read-tables", "", "comma-separated tables readable by the read tools; <schema>.* adds every table in the schema at boot (postgres only; required unless using columns-from-annotations)")
 	fs.StringVar(&annotationTiers, "columns-from-annotations", "", "comma-separated @access classes whose columns are readable, e.g. safe or safe,pii; all other classes are denied (requires connection-level-security)")
 	fs.DurationVar(&c.AnnotationRefreshInterval, "annotation-refresh-interval", 30*time.Second, "periodic catalog and column-grant refresh interval")
 	fs.DurationVar(&c.AnnotationRefreshTimeout, "annotation-refresh-timeout", 10*time.Second, "maximum catalog/grant refresh and drain duration")
-	fs.StringVar(&writeTables, "write-tables", "", "comma-separated tables writable by the write tools (optional)")
+	fs.StringVar(&writeTables, "write-tables", "", "comma-separated tables writable by the write tools; <schema>.* adds every table in the schema at boot (postgres only; optional)")
 	fs.BoolVar(&c.WritesEnabled, "dangerously-add-write-tools", false, "register the begin/execute/commit/rollback write tools (Postgres only)")
 	fs.StringVar(&c.DefaultSchema, "default-schema", "", "schema used to resolve unqualified table names (postgres: public; clickhouse: database from DSN, else default)")
 	fs.StringVar(&c.Transport, "transport", "http", "MCP transport: http|stdio")
@@ -92,7 +97,7 @@ func ParseFlags(args []string, getenv func(string) string, version string) (*Con
 	}
 
 	c.Dialect = policy.Dialect(strings.ToLower(strings.TrimSpace(dialect)))
-	c.ReadTables = splitList(readTables)
+	c.ReadTables, c.ReadSchemas = splitWildcards(splitList(readTables))
 	c.AnnotationTiers = splitList(annotationTiers)
 	annotationSet := false
 	fs.Visit(func(f *flag.Flag) {
@@ -103,7 +108,7 @@ func ParseFlags(args []string, getenv func(string) string, version string) (*Con
 	if annotationSet && len(c.AnnotationTiers) == 0 {
 		return nil, errors.New("--columns-from-annotations requires at least one class")
 	}
-	c.WriteTables = splitList(writeTables)
+	c.WriteTables, c.WriteSchemas = splitWildcards(splitList(writeTables))
 	if c.DSN == "" {
 		c.DSN = getenv("DATABASE_URL")
 	}
@@ -138,10 +143,10 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("--columns-from-annotations: invalid class name %q (lowercase words joined by hyphens)", tier)
 			}
 		}
-		if len(c.ReadTables) > 0 {
+		if len(c.ReadTables) > 0 || len(c.ReadSchemas) > 0 {
 			return errors.New("--columns-from-annotations and --read-tables are mutually exclusive")
 		}
-		if c.WritesEnabled || len(c.WriteTables) > 0 {
+		if c.WritesEnabled || len(c.WriteTables) > 0 || len(c.WriteSchemas) > 0 {
 			return errors.New("annotation mode is read-only; write flags are not supported")
 		}
 		if !c.ConnectionLevelSecurity {
@@ -151,7 +156,7 @@ func (c *Config) Validate() error {
 			return errors.New("annotation refresh durations must be positive")
 		}
 	}
-	if len(c.ReadTables) == 0 && len(c.AnnotationTiers) == 0 {
+	if len(c.ReadTables) == 0 && len(c.ReadSchemas) == 0 && len(c.AnnotationTiers) == 0 {
 		return errors.New("--read-tables is required (at least one table)")
 	}
 	if c.DefaultSchema == "" {
@@ -167,11 +172,21 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("--write-tables: %w", err)
 		}
 	}
+	for flag, schemas := range map[string][]string{"--read-tables": c.ReadSchemas, "--write-tables": c.WriteSchemas} {
+		for _, s := range schemas {
+			if c.Dialect != policy.Postgres {
+				return fmt.Errorf("%s: %s.* is supported on postgres only", flag, s)
+			}
+			if _, err := policy.ParseTableRef(s+".x", c.DefaultSchema, c.Dialect); err != nil {
+				return fmt.Errorf("%s: invalid schema in %s.*: %w", flag, s, err)
+			}
+		}
+	}
 	if c.WritesEnabled {
 		if c.Dialect == policy.ClickHouse {
 			return errors.New("--dangerously-add-write-tools: write tools are not supported on clickhouse")
 		}
-		if len(c.WriteTables) == 0 {
+		if len(c.WriteTables) == 0 && len(c.WriteSchemas) == 0 {
 			return errors.New("--dangerously-add-write-tools requires --write-tables")
 		}
 	}
@@ -257,6 +272,18 @@ func (c *Config) BuildPolicy() (*policy.Policy, error) {
 		p.WriteTables[ref] = struct{}{}
 	}
 	return p, nil
+}
+
+// splitWildcards separates `<schema>.*` entries from plain table names.
+func splitWildcards(entries []string) (tables, schemas []string) {
+	for _, e := range entries {
+		if s, ok := strings.CutSuffix(e, ".*"); ok {
+			schemas = append(schemas, s)
+			continue
+		}
+		tables = append(tables, e)
+	}
+	return tables, schemas
 }
 
 // defaultSchemaFor picks the schema used for unqualified names. ClickHouse

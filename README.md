@@ -52,6 +52,8 @@ restrictedsql-mcp \
   --annotation-refresh-interval 30s      (annotation catalog/grant refresh; HTTP and stdio)
   --annotation-refresh-timeout 10s       (bounds refresh and active-query draining)
   --write-tables schema.t3               (optional; used only with write tools)
+                                         (<schema>.* in either list adds every table in the schema
+                                          at boot; postgres only; restart to pick up new tables)
   --dangerously-add-write-tools          (registers the 4 write tools; Postgres only)
   --default-schema public                (schema for unqualified names;
                                           ClickHouse: database from the DSN, else "default")

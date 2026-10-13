@@ -77,6 +77,16 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	if len(cfg.ReadSchemas) > 0 || len(cfg.WriteSchemas) > 0 {
+		expandCtx, cancel := context.WithTimeout(ctx, bootProvisionTimeout)
+		err := dbsec.ExpandSchemas(expandCtx, cfg.DSN, pol, cfg.ReadSchemas, cfg.WriteSchemas)
+		cancel()
+		if err != nil {
+			return err
+		}
+		logger.Info("schema wildcards expanded", "read_schemas", cfg.ReadSchemas, "write_schemas", cfg.WriteSchemas,
+			"read_tables", len(pol.ReadTables), "write_tables", len(pol.WriteTables))
+	}
 	backend, guard, err := selectDialect(ctx, cfg, pol, logger)
 	if err != nil {
 		return err

@@ -177,3 +177,49 @@ func TestPostgresAnnotationsNonSuperuserBootstrap(t *testing.T) {
 	s.mustCall(t, "execute_sql_readonly", map[string]any{"sql": "SELECT id,amount FROM records ORDER BY id"})
 	s.mustReject(t, "execute_sql_readonly", map[string]any{"sql": "SELECT content FROM records"}, "content")
 }
+
+// TestPostgresSchemaWildcardReadWrite expands <schema>.* in --read-tables and
+// --write-tables at boot, provisioning DML-only roles from a non-superuser
+// bootstrap that holds the needed privileges WITH GRANT OPTION.
+func TestPostgresSchemaWildcardReadWrite(t *testing.T) {
+	c, schema := annotationPG(t)
+	ctx := context.Background()
+	role := fmt.Sprintf("bootstrap_rw_%d", time.Now().UnixNano())
+	for _, sql := range []string{
+		"CREATE ROLE " + role + " LOGIN CREATEROLE NOSUPERUSER PASSWORD 'bootstrap-pw'",
+		"GRANT USAGE ON SCHEMA " + schema + " TO " + role + " WITH GRANT OPTION",
+		"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA " + schema + " TO " + role + " WITH GRANT OPTION",
+		"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA " + schema + " TO " + role + " WITH GRANT OPTION",
+	} {
+		if _, err := c.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, sql := range []string{"DROP OWNED BY " + role, "DROP ROLE " + role} {
+			if _, err := c.Exec(ctx, sql); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	u, err := url.Parse(pgDSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.User = url.UserPassword(role, "bootstrap-pw")
+	s := bootServer(t, ServerOpts{
+		Dialect:     "postgres",
+		DSN:         u.String(),
+		ReadTables:  []string{schema + ".*"},
+		WriteTables: []string{schema + ".*"},
+		Writes:      true,
+		ExtraArgs:   []string{"--default-schema", schema, "--connection-level-security", "--security-role-prefix", "rsqlwild" + fmt.Sprint(time.Now().UnixNano()%1000000)},
+	})
+	s.mustCall(t, "execute_sql_readonly", map[string]any{"sql": "SELECT secret FROM closed"})
+	out := s.mustCall(t, "begin_transaction", nil)
+	id, _ := out["transaction_id"].(string)
+	s.mustCall(t, "execute_sql_write", map[string]any{"transaction_id": id, "sql": "INSERT INTO owners (id, label) VALUES (9, 'nine')"})
+	s.mustCall(t, "execute_sql_write", map[string]any{"transaction_id": id, "sql": "UPDATE records SET amount = 11 WHERE id = 1"})
+	s.mustReject(t, "execute_sql_write", map[string]any{"transaction_id": id, "sql": "CREATE TABLE extra (id int)"}, "")
+	s.mustCall(t, "rollback_transaction", map[string]any{"transaction_id": id})
+}
