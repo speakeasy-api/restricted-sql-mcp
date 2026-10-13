@@ -31,7 +31,7 @@ ALTER TABLE app.messages COMMENT COLUMN body '@access: opaque-restricted';
 In PostgreSQL use an actual newline in the comment or an `E'...\n...'` string
 when preserving existing prose. Markers and class names are case-sensitive.
 CRLF, horizontal whitespace around the marker, and trailing empty lines are
-accepted. Duplicate markers, malformed class names, trailing prose, and missing
+accepted. Duplicate markers, a marker mentioned mid-line, malformed class names, trailing prose, and missing
 markers deny the column. A valid marker followed by an invalid marker is still
 denied.
 
@@ -41,12 +41,18 @@ An example vocabulary (Gram's):
 |---|---|---|
 | `confidential` | Reviewed operational/organizational metadata | Allowed |
 | `confidential-pii` | Reviewed identity/contact fields | Opt-in |
+| `opaque-confidential` | Short identifiers and labels chosen outside the database owner, such as tool, client or span names | Opt-in |
 | `secret-restricted` | Credentials, tokens, keys, cookies, credential hashes | Never |
 | `restricted` | Known regulated or sensitive data, including PHI | Never |
 | `opaque-restricted` | Arbitrary customer, user or model content that may hold restricted data | Never |
 
 Only list classes whose every column is fit to expose: the allowlist is the
 only thing that decides readability.
+
+Values in `opaque-*` columns were chosen by someone outside the database owner.
+The type is known, the contents are not. Results go to an LLM, so allowing
+`opaque-confidential` lets those values reach the model: an agent should treat
+them as untrusted text, not instructions.
 
 Permissions apply to the whole column, including JSON, array and map contents.
 Column names are not classification evidence. No table, schema, or database

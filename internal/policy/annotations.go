@@ -27,7 +27,8 @@ var (
 func ValidTierName(s string) bool { return len(s) <= 63 && tierName.MatchString(s) }
 
 // ParseAccessTier counts malformed markers too, so a valid line cannot hide a
-// second, invalid decision. The marker must be the last nonempty comment line.
+// second, invalid decision. Any line mentioning the marker counts, including
+// mid-line prose, and the marker must start the last nonempty comment line.
 func ParseAccessTier(comment string) (Tier, error) {
 	lines := strings.Split(strings.ReplaceAll(comment, "\r\n", "\n"), "\n")
 	count, index, last := 0, -1, -1
@@ -35,7 +36,7 @@ func ParseAccessTier(comment string) (Tier, error) {
 		if strings.TrimSpace(line) != "" {
 			last = i
 		}
-		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "@access:") {
+		if strings.Contains(line, "@access:") {
 			count++
 			index = i
 		}

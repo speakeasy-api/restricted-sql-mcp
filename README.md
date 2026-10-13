@@ -104,8 +104,9 @@ restrictedsql-mcp --dialect postgres \
 
 The database owner defines the class names. The server reads only the classes
 listed and denies all others, so list only classes whose every column is fit to
-expose (for Gram, `confidential`, and `confidential,confidential-pii` when
-reviewed identity columns should be visible). Missing or malformed column
+expose (for Gram, `confidential`, adding `confidential-pii` when reviewed
+identity columns should be visible and `opaque-confidential` when support needs
+customer-chosen names such as tool or client names). Missing or malformed column
 comments deny access. Existing `--read-tables` deployments keep their
 current behavior.
 

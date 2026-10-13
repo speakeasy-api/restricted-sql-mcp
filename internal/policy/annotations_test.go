@@ -12,12 +12,12 @@ func TestAccessAnnotationParsing(t *testing.T) {
 	}{
 		{"@access: safe", Tier("safe")}, {"Description\r\n\t@access: pii \t\r\n", Tier("pii")},
 		{"@access: content", Tier("content")}, {"@access: secret", Tier("secret")}, {"@access: restricted", Tier("restricted")},
-		{"@access: opaque-restricted", Tier("opaque-restricted")}, {"@access: public", Tier("public")},
+		{"@access: opaque-restricted", Tier("opaque-restricted")}, {"@access: opaque-confidential", Tier("opaque-confidential")}, {"@access: public", Tier("public")},
 		{"@access: -x", ""}, {"@access: x-", ""}, {"@access: a--b", ""}, {"@access: a_b", ""}, {"@access: 1x", ""},
 		{"@access: safe,pii", ""}, {"@access: " + strings.Repeat("a", 64), ""},
 		{"", ""}, {"ordinary comment", ""}, {"@access: safe\n@access: nonsense", ""},
 		{"@access: safe\n@access: safe", ""}, {"@access: safe\nextra prose", ""}, {"@access:\nsafe", ""},
-		{"prefix @access: safe", ""}, {"@access: Safe", ""}, {"@access: safe extra", ""},
+		{"prefix @access: safe", ""}, {"old: @access: safe; superseded\n@access: restricted", ""}, {"@access: Safe", ""}, {"@access: safe extra", ""},
 	} {
 		t.Run(tc.comment, func(t *testing.T) {
 			tier, err := ParseAccessTier(tc.comment)
