@@ -9,8 +9,8 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/db"
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/db"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/sqlguard"
 )
 
 // BeginInput is the input of begin_transaction.

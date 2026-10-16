@@ -10,7 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/dbsec"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/dbsec"
 )
 
 // dsnForDatabase points the e2e superuser DSN at another database.

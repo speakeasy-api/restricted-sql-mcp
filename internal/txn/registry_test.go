@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/db"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/db"
 )
 
 type fakeTx struct{ rolledBack bool }

@@ -19,9 +19,9 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/db"
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/db"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/policy"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/sqlguard"
 )
 
 const (

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard"
-	pgguard "github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard/postgres"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/policy"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/sqlguard"
+	pgguard "github.com/speakeasy-api/restricted-sql-mcp/internal/sqlguard/postgres"
 )
 
 // This corpus is also run against PostgreSQL and the MCP server in e2e.

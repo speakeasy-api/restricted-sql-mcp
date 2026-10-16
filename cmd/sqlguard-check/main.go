@@ -10,10 +10,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard"
-	chguard "github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard/clickhouse"
-	pgguard "github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard/postgres"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/policy"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/sqlguard"
+	chguard "github.com/speakeasy-api/restricted-sql-mcp/internal/sqlguard/clickhouse"
+	pgguard "github.com/speakeasy-api/restricted-sql-mcp/internal/sqlguard/postgres"
 )
 
 func main() {

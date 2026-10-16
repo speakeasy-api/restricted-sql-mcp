@@ -9,9 +9,9 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/db"
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/db"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/policy"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/sqlguard"
 )
 
 // ExecuteReadInput is the input of execute_sql_readonly.

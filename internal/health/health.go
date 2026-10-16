@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/db"
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/db"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/policy"
 )
 
 // probeTimeout bounds one readiness evaluation so a hung database cannot

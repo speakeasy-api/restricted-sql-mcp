@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/policy"
 )
 
 // AnnotationSource is the privileged control plane. It only accepts a catalog

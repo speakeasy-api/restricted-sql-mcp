@@ -2,7 +2,7 @@
 
 Supersedes the 2026-09-21 table-level draft and the unvalidated v2 column draft.
 Repos: `speakeasy-api/gram` (annotations, lint, export) and
-`speakeasy-api/gram-restricted-sql-mcp` (catalog snapshots and enforcement).
+`speakeasy-api/restricted-sql-mcp` (catalog snapshots and enforcement).
 
 Status: the restricted-sql-mcp runtime and e2e implementation is now present;
 Gram's application annotations, inventory, migrations, lint and rollout remain

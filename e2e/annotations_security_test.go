@@ -11,8 +11,8 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/dbsec"
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/dbsec"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/policy"
 )
 
 func TestAnnotationsFlagValidation(t *testing.T) {

@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/db"
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/db"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/policy"
 )
 
 // watched reports backend errors to the manager so a dropped database is

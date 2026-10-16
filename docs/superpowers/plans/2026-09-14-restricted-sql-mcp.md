@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Module path `github.com/speakeasy-api/gram-restricted-sql-mcp`; `go 1.27.0` in go.mod.
+- Module path `github.com/speakeasy-api/restricted-sql-mcp`; `go 1.27.0` in go.mod.
 - No unit tests. The only tests are e2e tests in `e2e/`, gated by `E2E=1`, driven through the real binary and the MCP client. Add `slog` debug logging wherever it helps diagnose a failing e2e test.
 - Dependencies limited to the list in the Tech Stack. Standard library for everything else (`flag`, `log/slog`, `net/http`, `os/exec`).
 - Every SQL statement sent to a database must be the canonical deparsed SQL from a `sqlguard.Checked`, never raw input (metadata queries written by us in the backend are the exception).

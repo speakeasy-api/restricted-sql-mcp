@@ -14,11 +14,11 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/db"
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/multidb"
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard"
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/txn"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/db"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/multidb"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/policy"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/sqlguard"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/txn"
 )
 
 // Deps are the collaborators the tool handlers use.

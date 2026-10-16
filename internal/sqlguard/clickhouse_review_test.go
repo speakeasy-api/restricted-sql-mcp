@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard"
-	chguard "github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard/clickhouse"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/policy"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/sqlguard"
+	chguard "github.com/speakeasy-api/restricted-sql-mcp/internal/sqlguard/clickhouse"
 )
 
 func review2CHPolicy(t *testing.T) *policy.Policy {

@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/db"
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/db"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/policy"
 )
 
 func (b *Backend) ListSchemas(ctx context.Context) ([]db.Schema, error) {

@@ -1,7 +1,7 @@
 # Restricted SQL MCP Server — Design
 
 Date: 2026-09-14
-Repo: github.com/speakeasy-api/gram-restricted-sql-mcp (private, no license)
+Repo: github.com/speakeasy-api/restricted-sql-mcp (private, no license)
 Binary: `restrictedsql-mcp`
 Language: Go 1.27 (gram tunnel agent requires 1.27)
 

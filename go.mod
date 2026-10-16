@@ -1,4 +1,4 @@
-module github.com/speakeasy-api/gram-restricted-sql-mcp
+module github.com/speakeasy-api/restricted-sql-mcp
 
 go 1.27.0
 

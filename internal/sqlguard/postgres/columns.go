@@ -6,8 +6,8 @@ import (
 
 	pg_query "github.com/pganalyze/pg_query_go/v6"
 
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/policy"
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/sqlguard"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/policy"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/sqlguard"
 )
 
 // Postgres resolves "rel.name" as a column of rel when one exists and

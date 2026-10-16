@@ -6,7 +6,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/speakeasy-api/gram-restricted-sql-mcp/internal/multidb"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/multidb"
 )
 
 // ListDatabasesInput is the (empty) input of list_databases.
