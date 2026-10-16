@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -208,11 +208,7 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 			APIKey:         cfg.TunnelKey,
 			LocalMCPURL:    localURL,
 			ServiceVersion: cfg.TunnelServiceVersion,
-			Metadata: map[string]string{
-				"dialect":     string(pol.Dialect),
-				"read_tables": strings.Join(refStrings(pol.ReadTables), ","),
-				"write_tools": fmt.Sprint(pol.WritesEnabled),
-			},
+			Metadata:       tunnelMetadata(pol, cfg.Databases),
 		}, logger)
 		if err != nil {
 			return fmt.Errorf("tunnel: %w", err)
@@ -482,6 +478,28 @@ func logLevel(s string) slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+// maxTunnelMetadataBytes is the gateway's limit on the serialized metadata;
+// a session over it is refused and the agent reconnects forever.
+const maxTunnelMetadataBytes = 1024
+
+// tunnelMetadata describes the server to the gateway. Table lists are
+// reported as counts: an allowlist expanded from <schema>.* can be any size.
+func tunnelMetadata(pol *policy.Policy, databases string) map[string]string {
+	meta := map[string]string{
+		"dialect":      string(pol.Dialect),
+		"read_tables":  fmt.Sprint(len(pol.ReadTables)),
+		"write_tables": fmt.Sprint(len(pol.WriteTables)),
+		"write_tools":  fmt.Sprint(pol.WritesEnabled),
+	}
+	if databases != "" {
+		meta["databases"] = databases
+		if raw, _ := json.Marshal(meta); len(raw) > maxTunnelMetadataBytes {
+			delete(meta, "databases")
+		}
+	}
+	return meta
 }
 
 func refStrings(m map[policy.TableRef]struct{}) []string {
