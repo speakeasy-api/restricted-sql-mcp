@@ -394,7 +394,8 @@ project and ports when running that version beside the shared stack.
 
 Versions follow semver and are cut with [changesets](https://github.com/changesets/changesets):
 add one to every PR that changes the server (`npx changeset`, then pick patch, minor
-or major). On main the Release workflow keeps a "chore: version packages" PR open
+or major); the Changeset check fails a PR that changes Go code, modules or the
+Dockerfile without one (label `no-changeset` to skip). On main the Release workflow keeps a "chore: version packages" PR open
 with the version bump and `CHANGELOG.md`; merging it tags `vX.Y.Z`, creates the GitHub
 release and publishes `ghcr.io/speakeasy-api/restricted-sql-mcp:X.Y.Z` (plus `:X.Y`
 and `:latest`), signed with cosign. Every commit on main is also published as

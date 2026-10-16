@@ -1,0 +1,53 @@
+name: Changeset
+
+# A PR that changes what ships in the image (Go code, modules, Dockerfile)
+# must add a changeset so the next release records it: run `npx changeset`.
+# The version packages PR is exempt; the no-changeset label skips the check.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions: {}
+
+concurrency:
+  group: changeset-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  changeset:
+    name: Changeset
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require a changeset for server changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.head_ref }}
+          SKIP: ${{ contains(github.event.pull_request.labels.*.name, 'no-changeset') }}
+        run: |
+          if [ "$HEAD_REF" = "changeset-release/main" ] || [ "$SKIP" = "true" ]; then
+            echo "Changeset check skipped."
+            exit 0
+          fi
+          changed=$(git diff --name-only "$BASE_SHA"...HEAD)
+          server=$(grep -E '^(cmd|internal)/.*\.go$|^go\.(mod|sum)$|^Dockerfile$' <<<"$changed" | grep -v '_test\.go$' || true)
+          if [ -z "$server" ]; then
+            echo "No server changes; no changeset needed."
+            exit 0
+          fi
+          added=$(git diff --name-only --diff-filter=A "$BASE_SHA"...HEAD -- '.changeset/*.md' | grep -v '^\.changeset/README\.md$' || true)
+          if [ -n "$added" ]; then
+            echo "Changeset: $added"
+            exit 0
+          fi
+          echo "::error::This PR changes the server but adds no changeset. Run \`npx changeset\` (patch, minor or major), or label the PR no-changeset."
+          echo "Server files changed:"
+          echo "$server"
+          exit 1
