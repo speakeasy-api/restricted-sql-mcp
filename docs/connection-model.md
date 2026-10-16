@@ -23,13 +23,15 @@ any connection unused for a minute (pgx checks once a minute).
 | Pool | Size | Used by |
 |---|---|---|
 | read | `--pool-max-conns` (16) for the default database, `--database-pool-max-conns` (4) for each further `--databases` database | queries, explain, metadata tools |
-| write | `--max-open-txns` (8); only with `--connection-level-security` and writes on | `begin_transaction` |
+| write | `--max-open-txns` (8); only with write tools; each connection is closed when its transaction ends | `begin_transaction` |
 | probe | 1; default database only | `/readyz` and the column snapshot |
 
-Without connection-level security there is no separate write pool: the read
-pool gets `--max-open-txns` extra connections instead, so pinned transactions
-never starve reads. Without write tools no transaction connections are
-reserved at all.
+Transactions never borrow read connections, so pinned transactions cannot
+starve reads. Write connections are not kept after their transaction: an idle
+write connection left in each database's pool would add up past
+`--max-open-txns` across databases. The cost is a new connection per
+transaction. With connection-level security the write pool logs in as the
+read-write role; otherwise it uses the DSN.
 
 The probe pool keeps readiness independent of load: when every read
 connection is busy, `/readyz` still answers instead of timing out and taking
@@ -103,7 +105,8 @@ Upper bound with all databases busy at once:
 - transients: one listing at a time, plus one bootstrap connection per
   database being opened concurrently
 
-Write connections are bounded by `T` in total, not per database.
+Write connections are bounded by `T` in total, not per database, because
+each is closed when its transaction ends.
 
 Example, defaults with connection-level security and writes on, a main
 database and 30 preview databases:
@@ -117,3 +120,18 @@ database and 30 preview databases:
 
 Size `--pool-max-conns` and `--database-pool-max-conns` against the server's
 `max_connections`, minus what the application itself needs.
+
+## Load test
+
+`make e2e-load` runs `E2E_LOAD_AGENTS` (1000) concurrent MCP clients for
+`E2E_LOAD_SECONDS` (60) against a main database and `E2E_LOAD_DBS` (10)
+further ones, with connection-level security and writes on: 70% reads, 20%
+metadata and `list_databases`, 10% write transactions. It fails if any call
+other than `begin_transaction` at the cap errors, if `/readyz` fails, if the
+server's Postgres connections exceed the bound above, or if they do not drop
+back within three minutes.
+
+A run on a laptop: about 44,600 calls (700/s), no unexpected errors, slowest
+call 8.3s (queued for a connection), 4,082 transactions refused at the cap of
+8, peak 62 connections against a bound of 76 (53 read, 8 write, 1 bootstrap),
+settling to 10 afterwards.

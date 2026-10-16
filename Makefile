@@ -8,7 +8,7 @@ export E2E_CH_HTTP_PORT ?= 58123
 COMPOSE := docker compose -f e2e/docker-compose.yml
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: build vet test e2e-up e2e-down e2e e2e-pg e2e-ch e2e-annotations
+.PHONY: build vet test e2e-up e2e-down e2e e2e-pg e2e-ch e2e-annotations e2e-load
 
 build:
 	CGO_ENABLED=1 go build -trimpath -ldflags "-X main.version=$(VERSION)" -o bin/restrictedsql-mcp ./cmd/restrictedsql-mcp
@@ -39,3 +39,9 @@ e2e-ch: e2e-up
 
 e2e-annotations: e2e-up
 	E2E=1 go test ./e2e/... -count=1 -v -timeout 20m -run Annotations
+
+# Load test: E2E_LOAD_AGENTS concurrent MCP clients (default 1000) against a
+# main database plus E2E_LOAD_DBS further ones (default 10) for
+# E2E_LOAD_SECONDS (default 60). See docs/connection-model.md.
+e2e-load: e2e-up
+	E2E=1 E2E_LOAD=1 go test ./e2e/... -count=1 -v -timeout 20m -run TestPostgresLoad

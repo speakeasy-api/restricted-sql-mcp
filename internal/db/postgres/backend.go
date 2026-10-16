@@ -48,9 +48,10 @@ type execer interface {
 
 // Backend is a Postgres db.Backend backed by lazily connecting pgx pools.
 // read serves queries, explain and metadata; write serves Begin; probe serves
-// readiness (Ping, TablesExist) and the column snapshot. write is the read
-// pool unless the backend was built with a separate write DSN
-// (connection-level security); probe is the read pool unless WithProbePool.
+// readiness (Ping, TablesExist) and the column snapshot. write is a pool of
+// its own whenever writes are possible (it uses the write DSN under
+// connection-level security, else the read DSN); probe is the read pool
+// unless WithProbePool.
 type Backend struct {
 	read    *pgxpool.Pool
 	write   *pgxpool.Pool
@@ -77,8 +78,8 @@ func WithMaxConns(n int) Option {
 }
 
 // WithMaxOpenTxns is the process-wide cap on write transactions, each of
-// which pins a connection. A separate write pool is sized to it; a shared
-// pool gets it on top of the read connections, so writes never starve reads.
+// which pins a connection from a separate write pool sized to it, so writes
+// never starve reads.
 func WithMaxOpenTxns(n int) Option {
 	return func(o *options) { o.maxOpenTxns = n }
 }
@@ -118,14 +119,17 @@ func NewWithWriteDSN(ctx context.Context, readDSN, writeDSN string, pol *policy.
 	}
 	b := &Backend{pol: pol, log: logger, txnIdle: o.txnIdle}
 	var err error
-	if writeDSN == "" {
-		if b.read, err = newPool(ctx, readDSN, reads+o.maxOpenTxns); err != nil {
-			return nil, err
-		}
-		b.write = b.read
-	} else {
-		if b.read, err = newPool(ctx, readDSN, reads); err != nil {
-			return nil, err
+	if b.read, err = newPool(ctx, readDSN, reads); err != nil {
+		return nil, err
+	}
+	// Transactions get a pool of their own whose connections are closed when
+	// the transaction ends (see tx.finish): pooled idle write connections
+	// would otherwise pile up in every database's pool, past the
+	// process-wide --max-open-txns cap.
+	b.write = b.read
+	if o.maxOpenTxns > 0 || writeDSN != "" {
+		if writeDSN == "" {
+			writeDSN = readDSN
 		}
 		if b.write, err = newPool(ctx, writeDSN, max(o.maxOpenTxns, 1)); err != nil {
 			b.read.Close()

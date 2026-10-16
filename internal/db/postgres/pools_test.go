@@ -20,10 +20,10 @@ func TestPoolSizing(t *testing.T) {
 		read, write, probe    int32
 		sharedWrite, ownProbe bool
 	}{
-		"default":          {opts: nil, read: 16, sharedWrite: true},
-		"shared with txns": {opts: []Option{WithMaxConns(4), WithMaxOpenTxns(8)}, read: 12, sharedWrite: true},
-		"separate write":   {writeDSN: dsn, opts: []Option{WithMaxConns(4), WithMaxOpenTxns(8)}, read: 4, write: 8},
-		"probe pool":       {opts: []Option{WithMaxConns(2), WithProbePool()}, read: 2, sharedWrite: true, probe: 1, ownProbe: true},
+		"default":        {opts: nil, read: 16, sharedWrite: true},
+		"own write pool": {opts: []Option{WithMaxConns(4), WithMaxOpenTxns(8)}, read: 4, write: 8},
+		"separate write": {writeDSN: dsn, opts: []Option{WithMaxConns(4), WithMaxOpenTxns(8)}, read: 4, write: 8},
+		"probe pool":     {opts: []Option{WithMaxConns(2), WithProbePool()}, read: 2, sharedWrite: true, probe: 1, ownProbe: true},
 	} {
 		b, err := NewWithWriteDSN(ctx, dsn, tc.writeDSN, pol, nil, tc.opts...)
 		if err != nil {

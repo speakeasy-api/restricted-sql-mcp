@@ -107,7 +107,7 @@ func (t *tx) Rollback(ctx context.Context) error {
 // interrupted COMMIT has an unknown outcome; resetTimeout bounds it instead.
 func (t *tx) finish(ctx context.Context, verb string) error {
 	t.done = true
-	defer t.conn.Release()
+	defer t.release()
 	if t.conn.Conn().IsClosed() {
 		// Postgres discards the transaction when the connection drops.
 		if verb == "COMMIT" {
@@ -131,6 +131,20 @@ func (t *tx) finish(ctx context.Context, verb string) error {
 		return errors.New("commit: transaction was aborted by an earlier error and has been rolled back")
 	}
 	return nil
+}
+
+// release closes the transaction's connection rather than pooling it, so
+// write connections never outnumber open transactions; see NewWithWriteDSN.
+// A backend whose transactions share the read pool returns it instead.
+func (t *tx) release() {
+	if t.b.write == t.b.read {
+		t.conn.Release()
+		return
+	}
+	c := t.conn.Hijack()
+	ctx, cancel := context.WithTimeout(context.Background(), resetTimeout)
+	defer cancel()
+	_ = c.Close(ctx)
 }
 
 func errString(err error) string {
