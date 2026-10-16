@@ -1,12 +1,12 @@
-# Codex validation of the Gram column-access plan
+# Codex validation of the Speakeasy Control Plane column-access plan
 
 Reviewed the v2 draft at MCP commit `4ba0fa8`, the existing implementation, and
-Gram source at `55298d2bfef31ee337e6f5281f00359a1e109a7f`. Continued the unfinished
+Speakeasy Control Plane source at `55298d2bfef31ee337e6f5281f00359a1e109a7f`. Continued the unfinished
 validation requested in Claude session `1e8a498f-32c1-415c-b8c2-3bc78ec90bd0`.
 
 **Verdict:** the column-level approach fits the requested migration protection,
 but v2 had gaps that needed correction before implementation. The
-[revised plan](../plans/2026-09-23-gram-column-access-annotations.md) addresses
+[revised plan](../plans/2026-09-23-column-access-annotations.md) addresses
 them as implementation requirements. This is design validation, not a claim
 that the feature or its security acceptance tests are implemented.
 
@@ -94,7 +94,7 @@ describe the pre-implementation review.
 
 10. **Schema inventory and migration integration needed stronger checks.** A
     regex over CREATE blocks misses inferred view columns and other SQL shapes.
-    V3 requires SQL-aware inventory plus scratch-catalog parity. Gram's inspected
+    V3 requires SQL-aware inventory plus scratch-catalog parity. The Speakeasy Control Plane's inspected
     ClickHouse diff task generates both migration formats and materialized-column
     Go output; `atlas.hcl` includes `schema.sql` and `mart.sql`. V3 includes those
     artifacts and requires actual comment round trips, including unsupported
@@ -149,7 +149,7 @@ SELECT count(id) FROM probe.rows SETTINGS optimize_functions_to_subcolumns=0; --
 ## Limits and remaining validation
 
 These probes validate database behavior underlying the plan; they do not test a
-column-aware MCP implementation. Gram's inspected Atlas engine is pinned to
+column-aware MCP implementation. The Speakeasy Control Plane's inspected Atlas engine is pinned to
 ClickHouse 26.2.19.43, newer than the MCP e2e image, so repeat the engine/comment
 checks there and on actual deployment versions before rollout. Atlas comment
 round trips were not run, and no production column classification was approved.

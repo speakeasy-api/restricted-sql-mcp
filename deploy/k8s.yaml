@@ -1,5 +1,5 @@
 # Example deployment. There is no Service or Ingress on purpose: the only
-# ingress is the gram tunnel agent, which dials out to the gateway.
+# ingress is the Speakeasy Control Plane tunnel agent, which dials out to the gateway.
 #
 # MCP listens on 127.0.0.1 so nothing else in the cluster can reach it; the
 # in-process tunnel agent dials loopback. Kubelet probes hit the pod IP, not

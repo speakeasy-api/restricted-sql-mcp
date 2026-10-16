@@ -25,7 +25,7 @@ and explain) with no way to touch anything outside the allowlist.
    `statement_timeout` and `search_path` pinned; ClickHouse read tools run with
    `readonly=1`, `max_execution_time`, and `max_result_rows`.
 5. **No inbound path.** The listener binds loopback by default. The only ingress is
-   the gram tunnel agent, which dials out and proxies to the local `/mcp`.
+   The Speakeasy Control Plane tunnel agent, which dials out and proxies to the local `/mcp`.
 
 Second layer, independent of the guard: `--connection-level-security` makes the
 server provision database roles that hold exactly the grants the allowlist needs
@@ -64,7 +64,7 @@ restrictedsql-mcp \
   --statement-timeout 30s
   --txn-idle-timeout 2m                  (write txn auto-rollback after idle)
   --max-open-txns 8
-  --tunnel                               (start the gram tunnel agent; requires TUNNEL_GATEWAY_URL,
+  --tunnel                               (start the Speakeasy Control Plane tunnel agent; requires TUNNEL_GATEWAY_URL,
                                           TUNNEL_KEY; TUNNEL_SERVICE_VERSION defaults to the build version)
   --tunnel-only                          (refuse /mcp requests that did not arrive through the in-process
                                           tunnel agent; direct loopback access gets 401; requires --tunnel)
@@ -73,7 +73,7 @@ restrictedsql-mcp \
                                           see "Connection-level security")
   --security-role-prefix restrictedsql   (static roles: <prefix>_ro, <prefix>_rw;
                                           annotation mode adds a random process suffix)
-  --databases '^gram_preview_pr_'        (regex; also serve the matching databases of the same server
+  --databases '^app_preview_pr_'        (regex; also serve the matching databases of the same server
                                           next to the DSN's database; postgres static table mode only;
                                           see "Multi-database mode")
   --log-level info|debug
@@ -111,7 +111,7 @@ restrictedsql-mcp --dialect postgres \
 
 The database owner defines the class names. The server reads only the classes
 listed and denies all others, so list only classes whose every column is fit to
-expose (for Gram, `confidential`, adding `confidential-pii` when reviewed
+expose (for the Speakeasy Control Plane, `confidential`, adding `confidential-pii` when reviewed
 identity columns should be visible and `opaque-confidential` when support needs
 customer-chosen names such as tool or client names). Missing or malformed column
 comments deny access. Existing `--read-tables` deployments keep their
@@ -189,13 +189,13 @@ bootstrap role.
 ## Multi-database mode
 
 `--databases <regex>` serves several databases of one Postgres server from one
-process, for example a main `gram` database plus preview databases
-`gram_preview_pr_<N>` that come and go:
+process, for example a main `app` database plus preview databases
+`app_preview_pr_<N>` that come and go:
 
 ```sh
-restrictedsql-mcp --dialect postgres --dsn postgres://bootstrap:…@host:5432/gram \
-  --read-tables 'gram.*' --write-tables 'gram.*' --dangerously-add-write-tools \
-  --connection-level-security --databases '^gram_preview_pr_[0-9]+$'
+restrictedsql-mcp --dialect postgres --dsn postgres://bootstrap:…@host:5432/app \
+  --read-tables 'app.*' --write-tables 'app.*' --dangerously-add-write-tools \
+  --connection-level-security --databases '^app_preview_pr_[0-9]+$'
 ```
 
 - The DSN's database is always served and is the default. The DSN must be URL-form
@@ -373,7 +373,7 @@ other local databases) and ClickHouse to `127.0.0.1:59000` (native) and
 tears it down and should be run deliberately.
 
 `E2E_CH_VERSION` selects the Compose ClickHouse image (default `25.8`). Column
-access is also tested against Gram's pinned `26.2.19.43`; use a separate Compose
+access is also tested against the Speakeasy Control Plane's pinned `26.2.19.43`; use a separate Compose
 project and ports when running that version beside the shared stack.
 
 ## Deployment
@@ -395,7 +395,7 @@ not loopback, so `--health-listen 0.0.0.0:8081` serves `/healthz` and `/readyz`
 alone on a second port; `/mcp` there is a 404.
 
 Set `TUNNEL_GATEWAY_URL` and `TUNNEL_KEY` and pass `--tunnel` to expose the server
-through gram. The agent dials out and proxies to `http://<listen>/mcp`; the
+through the Speakeasy Control Plane. The agent dials out and proxies to `http://<listen>/mcp`; the
 readiness body reports the tunnel state without gating on it.
 
 ### Tunnel-only mode

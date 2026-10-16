@@ -1,8 +1,8 @@
 # Column access implementation verification
 
 Implemented the restricted-sql-mcp portion of the
-[validated plan](../plans/2026-09-23-gram-column-access-annotations.md) on
-2026-09-24. Gram's application annotations, inventory, source lint, migrations
+[validated plan](../plans/2026-09-23-column-access-annotations.md) on
+2026-09-24. The Speakeasy Control Plane's application annotations, inventory, source lint, migrations
 and deployment changes remain separate work. Runtime setup and limitations are
 in [the column access guide](../../column-access.md).
 
@@ -74,7 +74,7 @@ Read-only annotation mode does not enable write tools. Counts require at least
 one selectable column; there is no separate count-only permission. Crashes or
 database outages can leave process roles requiring operator cleanup.
 
-No application data classification or Gram deployment was changed by this work.
+No application data classification or Speakeasy Control Plane deployment was changed by this work.
 
 ## Follow-up hardening (2026-09-25)
 
@@ -85,7 +85,7 @@ An independent review pass of the implementation led to three changes:
   fails refresh while a cast between two built-in types, or a `pg_catalog`
   default conversion, uses a function outside `pg_catalog`; the server stays
   unavailable until it is removed. Extension casts on extension types, such as
-  pgvector's 23 casts in Gram's database, are ignored because guarded SQL cannot
+  pgvector's 23 casts in the Speakeasy Control Plane's database, are ignored because guarded SQL cannot
   reach them.
 - Refresh lifecycle. Refreshes run detached from their trigger, bounded by
   the gate lifetime and refresh timeout. A readiness probe that times out or

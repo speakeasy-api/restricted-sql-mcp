@@ -52,7 +52,7 @@ func (g *Gate) Wrap(next http.Handler) http.Handler {
 		if len(got) != len(g.token) || subtle.ConstantTimeCompare([]byte(got), []byte(g.token)) != 1 {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"error":"direct access refused: this endpoint only accepts requests via the gram tunnel"}`))
+			_, _ = w.Write([]byte(`{"error":"direct access refused: this endpoint only accepts requests via the Speakeasy Control Plane tunnel"}`))
 			return
 		}
 		q.Del(TokenParam)

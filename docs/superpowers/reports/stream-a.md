@@ -114,7 +114,7 @@ Backend:
 - Deparser gaps in pg_query are turned into rejections by the re-validation pass, not
   silently accepted; if agents hit one, the error names the re-parse failure.
 - go.mod merges with stream C conflicted twice on `go.mod`/`go.sum` (both branches added
-  deps); resolved by keeping ours and `go mod tidy`, which also pulled stream C's gram
+  deps); resolved by keeping ours and `go mod tidy`, which also pulled stream C's Speakeasy Control Plane tunnel
   dependency. Stream C should expect the same when merging back.
 - GitHub SSH was intermittently unreachable during this session; every push eventually
   succeeded and `origin/stream-a-postgres` is at the final commit.

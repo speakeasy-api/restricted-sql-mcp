@@ -4,7 +4,7 @@
 
 **Goal:** Build `restrictedsql-mcp`, a Go MCP server that exposes allowlisted-table SQL access to Postgres or ClickHouse through a fail-closed AST validator, with e2e tests against Docker databases.
 
-**Architecture:** Raw SQL → dialect parser → fail-closed allowlist visitor → deparse to canonical SQL → backend executes under session-level protections. MCP tools (go-sdk, Streamable HTTP on loopback) sit on top; a Gram tunnel agent is the only ingress. Three independent streams: **A** Postgres guard+backend, **B** ClickHouse guard+backend, **C** server, transactions, health, tunnel, e2e harness, deploy. The shared contracts in `internal/policy`, `internal/sqlguard/guard.go`, `internal/db/backend.go` are already committed and are the only coupling between streams. Do not change them without noting it in your final report.
+**Architecture:** Raw SQL → dialect parser → fail-closed allowlist visitor → deparse to canonical SQL → backend executes under session-level protections. MCP tools (go-sdk, Streamable HTTP on loopback) sit on top; a Speakeasy Control Plane tunnel agent is the only ingress. Three independent streams: **A** Postgres guard+backend, **B** ClickHouse guard+backend, **C** server, transactions, health, tunnel, e2e harness, deploy. The shared contracts in `internal/policy`, `internal/sqlguard/guard.go`, `internal/db/backend.go` are already committed and are the only coupling between streams. Do not change them without noting it in your final report.
 
 **Tech Stack:** Go 1.27, `github.com/modelcontextprotocol/go-sdk` v1.8.0, `github.com/pganalyze/pg_query_go/v6` v6.2.2 (cgo), `github.com/AfterShip/clickhouse-sql-parser` v0.5.6, `github.com/jackc/pgx/v5` v5.11.0, `github.com/ClickHouse/clickhouse-go/v2` v2.48.0, `github.com/speakeasy-api/gram/tunnel/agent`, Docker Compose.
 
@@ -45,7 +45,7 @@ internal/mcpserver/tools_read.go           (C) execute_sql_readonly, explain_que
 internal/mcpserver/tools_meta.go           (C) list_schemas, list_objects, get_object_details
 internal/mcpserver/tools_write.go          (C) begin/execute/commit/rollback
 internal/health/health.go                  (C) /healthz /readyz
-internal/tunnel/tunnel.go                  (C) gram agent wrapper
+internal/tunnel/tunnel.go                  (C) Speakeasy Control Plane tunnel agent wrapper
 e2e/docker-compose.yml                     (C)
 e2e/postgres/Dockerfile, e2e/postgres/init.sql   (C)
 e2e/clickhouse/init.sql                    (C)

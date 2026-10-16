@@ -1,4 +1,4 @@
-// Package tunnel runs the gram tunnel agent, the only ingress to the MCP
+// Package tunnel runs the Speakeasy Control Plane tunnel agent, the only ingress to the MCP
 // listener, and tracks its connection state for the readiness probe.
 package tunnel
 

@@ -3,7 +3,7 @@
 Date: 2026-09-14
 Repo: github.com/speakeasy-api/restricted-sql-mcp (private, no license)
 Binary: `restrictedsql-mcp`
-Language: Go 1.27 (gram tunnel agent requires 1.27)
+Language: Go 1.27 (Speakeasy Control Plane tunnel agent requires 1.27)
 
 ## 1. Goal
 
@@ -16,7 +16,7 @@ canonical deparsed form, never the raw input.
 Primary use case: let an agent inspect data and debug why a query is slow
 (introspection + explain) with no risk of touching anything outside the allowlist.
 
-Non-goals for v1: authentication (handled by the Gram tunnel layer), per-user
+Non-goals for v1: authentication (handled by the Speakeasy Control Plane tunnel layer), per-user
 role mapping, bind parameters, MERGE/COPY/DDL of any kind, ClickHouse writes.
 
 ## 2. Approach
@@ -58,7 +58,7 @@ restrictedsql-mcp \
   --statement-timeout 30s
   --txn-idle-timeout 2m                  (write txn auto-rollback after idle)
   --max-open-txns 8
-  --tunnel                               (start gram tunnel agent; requires TUNNEL_GATEWAY_URL,
+  --tunnel                               (start Speakeasy Control Plane tunnel agent; requires TUNNEL_GATEWAY_URL,
                                           TUNNEL_KEY; TUNNEL_SERVICE_VERSION defaults to build version)
   --tunnel-only                          (refuse /mcp requests that did not come through the in-process
                                           tunnel agent; requires --tunnel and --transport http)
@@ -76,7 +76,7 @@ Boot semantics:
   starts, `/readyz` reports not-ready with the reason, and readiness is re-evaluated
   on each probe. This matches "booting just boots; health/init probes validate".
 - Listener binds only the configured address (default loopback). There is no
-  inbound path except via the tunnel agent, which dials out to Gram and proxies to
+  inbound path except via the tunnel agent, which dials out to the Speakeasy Control Plane and proxies to
   `http://<listen>/mcp`.
 
 Health:

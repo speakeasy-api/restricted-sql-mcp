@@ -39,7 +39,7 @@ SIGTERM-and-wait, `docker pause` with unpause at cleanup, extra environment).
 
 Commits `c13a13a`, `7798987`, `94bd4a3`, `c7bbdbb` add the harness helpers and
 the tests; `go.mod` now lists `coder/websocket` and `hashicorp/yamux` as direct
-dependencies (already in the graph via the gram agent) for the fake gateway.
+dependencies (already in the graph via the Speakeasy Control Plane tunnel agent) for the fake gateway.
 
 ## Reviewed and left unchanged
 

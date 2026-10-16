@@ -1,7 +1,7 @@
 name: Publish image
 
 # Builds the server image, pushes it to ghcr.io and signs it with cosign
-# (keyless), like the gram tunnel agent. Deploy by digest, not by tag.
+# (keyless), like the Speakeasy Control Plane tunnel agent. Deploy by digest, not by tag.
 on:
   push:
     branches: [main]

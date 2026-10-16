@@ -1,18 +1,18 @@
-# Gram column access annotations — validated plan (v3)
+# Speakeasy Control Plane column access annotations — validated plan (v3)
 
 Supersedes the 2026-09-21 table-level draft and the unvalidated v2 column draft.
 Repos: `speakeasy-api/gram` (annotations, lint, export) and
 `speakeasy-api/restricted-sql-mcp` (catalog snapshots and enforcement).
 
 Status: the restricted-sql-mcp runtime and e2e implementation is now present;
-Gram's application annotations, inventory, migrations, lint and rollout remain
+The Speakeasy Control Plane's application annotations, inventory, migrations, lint and rollout remain
 separate work. See [the runtime guide](../../column-access.md) for the implemented
 surface and operational requirements.
 Implementation and test evidence are recorded in
 [the implementation report](../reports/column-access-implementation.md).
 Codex validation, probes, and remaining implementation checks are recorded in
-[the validation report](../reports/gram-column-access-plan-validation.md).
-The Gram schema and migration tasks were inspected at
+[the validation report](../reports/column-access-plan-validation.md).
+The Speakeasy Control Plane schema and migration tasks were inspected at
 `55298d2bfef31ee337e6f5281f00359a1e109a7f`; rebase classifications against the
 actual implementation revision. That snapshot has 227 Postgres CREATE objects,
 40 ClickHouse schema objects (including 9 materialized views), and one additional
@@ -25,7 +25,7 @@ column identities and permissions, and accepts SQL only when every referenced
 column is permitted. Adding a column never grants access by inheritance.
 Schema discovery remains global through dedicated metadata tools.
 
-- Default tier selection: `safe`. Gram can opt into `safe,pii` to include reviewed
+- Default tier selection: `safe`. The Speakeasy Control Plane can opt into `safe,pii` to include reviewed
   identity fields such as email. This does not include PHI or arbitrary personal
   data merely because the deployment opted into email.
 - Unknown, missing, invalid, duplicate, or unselected annotations deny access.
@@ -79,7 +79,7 @@ engine objects are outside the classification inventory and never implicitly
 become queryable. Unsupported application objects still appear in metadata.
 
 ```sql
--- Illustrative columns; the inventory determines actual Gram column names.
+-- Illustrative columns; the inventory determines actual Speakeasy Control Plane column names.
 COMMENT ON COLUMN public.chat_messages.id IS '@access: safe';
 COMMENT ON COLUMN public.chat_messages.content IS '@access: content';
 COMMENT ON COLUMN public.chat_messages.user_email IS '@access: pii';
@@ -146,7 +146,7 @@ and verify grants before reopening. Document this as the initial deployment
 protocol, not an optional refinement. Comment-only reclassification without that
 protocol takes effect after successful refresh and is not instantaneous.
 
-## Part G — Gram repository
+## Part G — Speakeasy Control Plane repository
 
 ### G1: Convention and migration workflow
 
@@ -177,7 +177,7 @@ local database. The task declares a positional migration name:
 Annotate `server/clickhouse/schema.sql` and `server/clickhouse/mart.sql`; the
 inspected `server/atlas.hcl` combines both in each ClickHouse environment and
 pins its development engine to 26.2.19.43. Our current MCP e2e engine is 25.8,
-so grant/comment probes must also run on Gram's pinned version before rollout.
+so grant/comment probes must also run on the Speakeasy Control Plane's pinned version before rollout.
 Classify materialized-view output independently of its source/target: transforms
 can change sensitivity. Include generated/materialized/alias columns in inventory;
 a selected tier alone does not make an unsupported computed column queryable.
@@ -241,7 +241,7 @@ Reject an unsupported relation even for `count(*)`.
 
 Retain fail-closed function/type/operator checks. Close the documented
 user-defined-function/operator shadowing path before declaring this mode ready
-for Gram: bind approved built-ins by resolved identity and trusted signatures,
+for the Speakeasy Control Plane: bind approved built-ins by resolved identity and trusted signatures,
 qualify where sufficient, and reject unresolved overloads, custom types/casts,
 or SECURITY DEFINER execution paths. Column grants do not constrain arbitrary
 privileged routines. Include implicit engine policies/expressions in the trusted
@@ -405,7 +405,7 @@ hidden by a database permission error still needs fixing.
 
 Update README, design spec and deploy examples with the actual supported surface,
 read-only annotation scope, metadata fields, failure behavior and migration
-protocol. First run against Gram scratch databases, compare every exported column
+protocol. First run against Speakeasy Control Plane scratch databases, compare every exported column
 to live metadata, and verify permitted queries with restricted credentials.
 Roll out only after the acceptance matrix and the column-classification review
 are complete. Do not claim table comments or names alone establish safety.
@@ -417,7 +417,7 @@ are complete. Do not claim table comments or names alone establish safety.
 2. Make explicit G2/G3 classification decisions; generate/review migrations.
 3. Implement R0 prerequisites and R1/R2 snapshot/lifecycle/configuration.
 4. Implement R3/R4 binding, R5 grants and R6 metadata on the shared generation.
-5. Run R7/R8 and Gram integration, then G5/R9 rollout documentation.
+5. Run R7/R8 and Speakeasy Control Plane integration, then G5/R9 rollout documentation.
 
 The initial seed review and support for complex derived/engine objects are the
 largest work items. It is acceptable to keep unsupported shapes denied while

@@ -35,7 +35,7 @@ accepted. Duplicate markers, a marker mentioned mid-line, malformed class names,
 markers deny the column. A valid marker followed by an invalid marker is still
 denied.
 
-An example vocabulary (Gram's):
+An example vocabulary (the Speakeasy Control Plane's):
 
 | Class | Meaning | Typical allowlist |
 |---|---|---|
@@ -227,7 +227,7 @@ dependency validation design.
 and ClickHouse servers, including SQL binding, direct column privileges, refresh
 failure/recovery, migration changes, in-flight cancellation and stdio. The full
 `make e2e` suite also retains static-mode coverage. Compose supports
-`E2E_CH_VERSION` for the 25.8 and Gram 26.2.19.43 version checks.
+`E2E_CH_VERSION` for the 25.8 and Speakeasy Control Plane 26.2.19.43 version checks.
 Run annotation suites sequentially against each database instance: their DDL
 fixtures change the global catalog and deliberately affect refresh admission.
 
