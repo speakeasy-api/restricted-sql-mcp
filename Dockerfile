@@ -10,6 +10,7 @@ RUN CGO_ENABLED=1 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}"
 
 FROM gcr.io/distroless/base-debian12:nonroot@sha256:7f0c72cd138b442ae0deeb69c08b1acf5525439ba251a49ad93c320a061567e5
 COPY --from=build /out/restrictedsql-mcp /restrictedsql-mcp
-USER nonroot:nonroot
+# Numeric so Kubernetes runAsNonRoot can verify it (distroless nonroot is 65532).
+USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["/restrictedsql-mcp"]
