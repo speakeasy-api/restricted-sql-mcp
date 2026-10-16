@@ -26,12 +26,15 @@ type Config struct {
 	// ReadSchemas and WriteSchemas come from `<schema>.*` entries in
 	// --read-tables and --write-tables. Every table in them is added to the
 	// policy at boot (Postgres only); tables created later need a restart.
-	ReadSchemas      []string
-	WriteSchemas     []string
-	WritesEnabled    bool
-	DefaultSchema    string
-	Transport        string // "http" | "stdio"
-	Listen           string // "127.0.0.1:8080"
+	ReadSchemas   []string
+	WriteSchemas  []string
+	WritesEnabled bool
+	DefaultSchema string
+	Transport     string // "http" | "stdio"
+	Listen        string // "127.0.0.1:8080"
+	// HealthListen, when set, serves only /healthz and /readyz on a second
+	// listener, so probes can reach the pod while /mcp stays on loopback.
+	HealthListen     string
 	MaxRows          int
 	StatementTimeout time.Duration
 	TxnIdleTimeout   time.Duration
@@ -86,6 +89,7 @@ func ParseFlags(args []string, getenv func(string) string, version string) (*Con
 	fs.StringVar(&c.DefaultSchema, "default-schema", "", "schema used to resolve unqualified table names (postgres: public; clickhouse: database from DSN, else default)")
 	fs.StringVar(&c.Transport, "transport", "http", "MCP transport: http|stdio")
 	fs.StringVar(&c.Listen, "listen", "127.0.0.1:8080", "listen address for the http transport (MCP at /mcp, health at /healthz and /readyz)")
+	fs.StringVar(&c.HealthListen, "health-listen", "", "optional second listen address serving only /healthz and /readyz, e.g. 0.0.0.0:8081 for kubelet probes while --listen stays on loopback")
 	fs.IntVar(&c.MaxRows, "max-rows", 1000, "server cap on rows returned per call")
 	fs.DurationVar(&c.StatementTimeout, "statement-timeout", 30*time.Second, "per-statement timeout applied at the database session")
 	fs.DurationVar(&c.TxnIdleTimeout, "txn-idle-timeout", 2*time.Minute, "write transactions idle longer than this are rolled back")
@@ -216,6 +220,14 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxOpenTxns <= 0 {
 		return errors.New("--max-open-txns must be greater than zero")
+	}
+	if c.HealthListen != "" {
+		if c.Transport != "http" {
+			return errors.New("--health-listen requires --transport http")
+		}
+		if c.HealthListen == c.Listen {
+			return errors.New("--health-listen must differ from --listen")
+		}
 	}
 	if c.TunnelOnly {
 		if !c.Tunnel {

@@ -1,10 +1,9 @@
 # Example deployment. There is no Service or Ingress on purpose: the only
 # ingress is the gram tunnel agent, which dials out to the gateway.
 #
-# Probes use httpGet against the pod's own port. The server listens on
-# 127.0.0.1 by default so nothing else in the cluster can reach it; kubelet
-# probes reach loopback in most CNIs. If yours cannot, change --listen to
-# 0.0.0.0:8080 and add a NetworkPolicy that denies all ingress to the pod.
+# MCP listens on 127.0.0.1 so nothing else in the cluster can reach it; the
+# in-process tunnel agent dials loopback. Kubelet probes hit the pod IP, not
+# loopback, so --health-listen serves only /healthz and /readyz on 8081.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -55,6 +54,7 @@ spec:
             # Stop/drain ALL MCP instances before restrictive or meaning-changing
             # migrations; restart and verify readiness before reopening access.
             - --listen=127.0.0.1:8080
+            - --health-listen=0.0.0.0:8081
             - --statement-timeout=30s
             - --max-rows=1000
             - --log-level=info
@@ -82,23 +82,23 @@ spec:
                   name: restrictedsql-mcp
                   key: TUNNEL_KEY
           ports:
-            - name: http
-              containerPort: 8080
+            - name: health
+              containerPort: 8081
           livenessProbe:
             httpGet:
               path: /healthz
-              port: 8080
+              port: health
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /readyz
-              port: 8080
+              port: health
             periodSeconds: 10
             failureThreshold: 3
           startupProbe:
             httpGet:
               path: /readyz
-              port: 8080
+              port: health
             periodSeconds: 5
             failureThreshold: 24
           resources:

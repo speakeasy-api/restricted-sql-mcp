@@ -234,18 +234,43 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", cfg.Listen, err)
 	}
-	httpSrv := &http.Server{
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-		BaseContext:       func(net.Listener) context.Context { return ctx },
+	// --health-listen exposes only the probes, so /mcp can stay on loopback
+	// where only the in-process tunnel agent reaches it.
+	var healthLn net.Listener
+	if cfg.HealthListen != "" {
+		if healthLn, err = net.Listen("tcp", cfg.HealthListen); err != nil {
+			_ = ln.Close()
+			return fmt.Errorf("listen %s: %w", cfg.HealthListen, err)
+		}
 	}
-	errCh := make(chan error, 2)
+	newServer := func(h http.Handler) *http.Server {
+		return &http.Server{
+			Handler:           h,
+			ReadHeaderTimeout: 10 * time.Second,
+			BaseContext:       func(net.Listener) context.Context { return ctx },
+		}
+	}
+	httpSrv := newServer(mux)
+	errCh := make(chan error, 3)
 	go func() {
 		logger.Info("http listener ready", "addr", ln.Addr().String(), "mcp", "/mcp", "healthz", "/healthz", "readyz", "/readyz")
 		if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- fmt.Errorf("http serve: %w", err)
 		}
 	}()
+	var healthSrv *http.Server
+	if healthLn != nil {
+		healthMux := http.NewServeMux()
+		healthMux.HandleFunc("/healthz", checker.Healthz)
+		healthMux.HandleFunc("/readyz", checker.Readyz)
+		healthSrv = newServer(healthMux)
+		go func() {
+			logger.Info("health listener ready", "addr", healthLn.Addr().String(), "healthz", "/healthz", "readyz", "/readyz")
+			if err := healthSrv.Serve(healthLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("health serve: %w", err)
+			}
+		}()
+	}
 	if runner != nil {
 		go func() {
 			if err := runner.Run(ctx); err != nil && ctx.Err() == nil {
@@ -266,6 +291,11 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 	defer cancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("http shutdown incomplete", "error", err.Error())
+	}
+	if healthSrv != nil {
+		if err := healthSrv.Shutdown(shutdownCtx); err != nil {
+			logger.Warn("health shutdown incomplete", "error", err.Error())
+		}
 	}
 	logger.Info("http listener stopped")
 	return nil

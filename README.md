@@ -59,6 +59,7 @@ restrictedsql-mcp \
                                           ClickHouse: database from the DSN, else "default")
   --transport http|stdio                 (default http)
   --listen 127.0.0.1:8080                (http transport; MCP at /mcp, health at /healthz /readyz)
+  --health-listen 0.0.0.0:8081           (optional second listener serving only /healthz and /readyz)
   --max-rows 1000                        (server cap on rows returned per call)
   --statement-timeout 30s
   --txn-idle-timeout 2m                  (write txn auto-rollback after idle)
@@ -388,9 +389,10 @@ docker run --rm restrictedsql-mcp:v0.1.0 --help
 
 `deploy/k8s.yaml` is a single-replica Deployment with the liveness probe on
 `/healthz`, readiness and startup probes on `/readyz`, `DATABASE_URL` and
-`TUNNEL_*` from a Secret, and no Service or Ingress. The server listens on
-loopback; if your CNI keeps kubelet from probing 127.0.0.1, listen on
-`0.0.0.0:8080` and add a NetworkPolicy that denies ingress.
+`TUNNEL_*` from a Secret, and no Service or Ingress. `/mcp` listens on loopback,
+where only the in-process tunnel agent reaches it. Kubelet probes the pod IP,
+not loopback, so `--health-listen 0.0.0.0:8081` serves `/healthz` and `/readyz`
+alone on a second port; `/mcp` there is a 404.
 
 Set `TUNNEL_GATEWAY_URL` and `TUNNEL_KEY` and pass `--tunnel` to expose the server
 through gram. The agent dials out and proxies to `http://<listen>/mcp`; the
@@ -405,5 +407,6 @@ local URL the in-process tunnel agent proxies to (the agent merges that query
 into every request it forwards), and refuses any `/mcp` request without it with
 `401`. The token is stripped before the MCP handler sees the request, is not
 logged, and cannot be obtained through the tunnel. `/healthz` and `/readyz`
-stay open for probes. `--transport stdio` needs none of this: only the parent
+stay open for probes; use `--health-listen` to probe from outside the pod
+without exposing `/mcp`. `--transport stdio` needs none of this: only the parent
 process holds the pipe.
