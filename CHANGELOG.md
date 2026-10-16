@@ -1,5 +1,13 @@
 # restricted-sql-mcp
 
+## 0.2.2
+
+### Patch Changes
+
+- 572d455: Tunnel metadata reports table counts instead of the full table list, so a
+  large allowlist (such as `<schema>.*`) no longer exceeds the gateway's
+  1024-byte limit and leaves the tunnel agent reconnecting forever.
+
 ## 0.2.1
 
 ### Patch Changes
