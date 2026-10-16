@@ -281,6 +281,18 @@ indexes are mutually exclusive. ClickHouse runs `EXPLAIN PLAN indexes=1` (or
 `EXPLAIN PIPELINE` with `analyze`) and rejects hypothetical indexes. Returns
 `{ "dialect", "plan": <json or text>, "notes"?: string }`.
 
+### Database tool (Postgres only, registered only with `--databases`)
+
+**`list_databases`** — `{}`
+The database-level counterpart of `list_schemas`: lists the databases this server
+serves, re-reading the database list on each call so new and dropped databases
+show up. Returns `{ "databases": [{ "name", "default", "open" }] }`; `default`
+marks the DSN's database (used when `"database"` is omitted), `open` whether the server already holds connections to it. Pass a
+`name` as the `"database"` argument of the read tools, the metadata tools and
+`begin_transaction`. Only served databases are listed: other databases on the
+instance are not, and SQL cannot enumerate them because `pg_database` is not
+read-allowlisted. See "Multi-database mode".
+
 ### Write tools (Postgres only, need `--dangerously-add-write-tools`)
 
 Writes are only possible inside an explicit transaction so the agent can inspect
