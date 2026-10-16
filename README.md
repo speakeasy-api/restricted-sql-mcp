@@ -87,7 +87,10 @@ Boot semantics:
 - Invalid flags exit 2 with a message: unknown dialect, no DSN, no read tables, an
   unparsable table name, write tools on ClickHouse, write tools without
   `--write-tables`, `--tunnel` without its environment, unknown transport,
-  `--databases` with an invalid regex, on ClickHouse, or with `--columns-from-annotations`.
+  `--databases` with an invalid regex, on ClickHouse, or with `--columns-from-annotations`,
+  `--health-listen` with stdio or equal to `--listen`, and a zero or negative
+  `--txn-max-lifetime`, `--pool-max-conns` or `--database-pool-max-conns`.
+  The pool flags override any `pool_max_conns` in the DSN.
 - An unreachable database or a missing allowlisted table does **not** fail boot.
   The server starts, `/readyz` answers 503 with the reason, and readiness is
   re-evaluated on every probe.
