@@ -1,5 +1,12 @@
 # restricted-sql-mcp
 
+## 0.2.1
+
+### Patch Changes
+
+- d8a1730: The image runs as the numeric user 65532 instead of the name `nonroot`, so
+  Kubernetes `runAsNonRoot` works without setting `runAsUser`.
+
 ## 0.2.0
 
 ### Minor Changes
