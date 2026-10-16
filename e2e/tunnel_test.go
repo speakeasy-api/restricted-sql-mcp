@@ -123,23 +123,27 @@ func TestPostgresTunnelProxiesToLocalMCP(t *testing.T) {
 	if resp.StatusCode != 200 || !strings.Contains(respBody, "restrictedsql-mcp") {
 		t.Fatalf("initialize through tunnel: %d %s", resp.StatusCode, respBody)
 	}
-	sessionID := resp.Header.Get("Mcp-Session-Id")
-	if sessionID == "" {
-		t.Fatalf("no Mcp-Session-Id through the tunnel; headers %v", resp.Header)
+	// Stateless MCP (2026-07-28): no session is created or required.
+	if sessionID := resp.Header.Get("Mcp-Session-Id"); sessionID != "" {
+		t.Fatalf("stateless server issued Mcp-Session-Id %q", sessionID)
 	}
 	req, _ = http.NewRequest(http.MethodPost, "http://tunnel/", strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	req.Header.Set("Mcp-Session-Id", sessionID)
 	g.roundTrip(t, sess, req)
 	call := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"execute_sql_readonly","arguments":{"sql":"SELECT count(*) AS n FROM allowed_orders"}}}`
 	req, _ = http.NewRequest(http.MethodPost, "http://tunnel/", strings.NewReader(call))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	req.Header.Set("Mcp-Session-Id", sessionID)
 	resp, respBody = g.roundTrip(t, sess, req)
 	if resp.StatusCode != 200 || !strings.Contains(respBody, `"row_count":1`) {
 		t.Fatalf("tools/call through tunnel: %d %s", resp.StatusCode, respBody)
+	}
+	// Stateless servers have no standalone SSE stream to open.
+	req, _ = http.NewRequest(http.MethodGet, "http://tunnel/", nil)
+	req.Header.Set("Accept", "text/event-stream")
+	if resp, _ := g.roundTrip(t, sess, req); resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /mcp on a stateless server: %d, want 405", resp.StatusCode)
 	}
 	req, _ = http.NewRequest(http.MethodGet, "http://tunnel/_tunnel/other", nil)
 	if resp, _ := g.roundTrip(t, sess, req); resp.StatusCode != 404 {

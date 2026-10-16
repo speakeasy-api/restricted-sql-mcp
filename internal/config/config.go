@@ -38,11 +38,16 @@ type Config struct {
 	MaxRows          int
 	StatementTimeout time.Duration
 	TxnIdleTimeout   time.Duration
+	TxnMaxLifetime   time.Duration
 	MaxOpenTxns      int
-	Tunnel           bool
-	TunnelOnly       bool
-	LogLevel         string
-	Version          string
+	// PoolMaxConns caps read connections to the default database;
+	// DatabasePoolMaxConns caps them to each further --databases database.
+	PoolMaxConns         int
+	DatabasePoolMaxConns int
+	Tunnel               bool
+	TunnelOnly           bool
+	LogLevel             string
+	Version              string
 
 	// ConnectionLevelSecurity treats the DSN as a bootstrap connection used
 	// to provision least-privilege database roles; tool traffic then runs as
@@ -93,7 +98,10 @@ func ParseFlags(args []string, getenv func(string) string, version string) (*Con
 	fs.IntVar(&c.MaxRows, "max-rows", 1000, "server cap on rows returned per call")
 	fs.DurationVar(&c.StatementTimeout, "statement-timeout", 30*time.Second, "per-statement timeout applied at the database session")
 	fs.DurationVar(&c.TxnIdleTimeout, "txn-idle-timeout", 2*time.Minute, "write transactions idle longer than this are rolled back")
+	fs.DurationVar(&c.TxnMaxLifetime, "txn-max-lifetime", 5*time.Minute, "write transactions are rolled back this long after begin_transaction, however busy")
 	fs.IntVar(&c.MaxOpenTxns, "max-open-txns", 8, "maximum concurrently open write transactions")
+	fs.IntVar(&c.PoolMaxConns, "pool-max-conns", 16, "maximum read connections to the default database (write transactions add up to --max-open-txns)")
+	fs.IntVar(&c.DatabasePoolMaxConns, "database-pool-max-conns", 4, "maximum read connections to each further --databases database")
 	fs.BoolVar(&c.Tunnel, "tunnel", false, "start the Speakeasy Control Plane tunnel agent (requires TUNNEL_GATEWAY_URL and TUNNEL_KEY)")
 	fs.BoolVar(&c.TunnelOnly, "tunnel-only", false, "refuse /mcp requests that did not arrive through the in-process Speakeasy Control Plane tunnel agent (requires --tunnel and --transport http)")
 	fs.StringVar(&c.LogLevel, "log-level", "info", "log level: debug|info|warn|error")
@@ -217,6 +225,12 @@ func (c *Config) Validate() error {
 	}
 	if c.TxnIdleTimeout <= 0 {
 		return errors.New("--txn-idle-timeout must be greater than zero")
+	}
+	if c.PoolMaxConns <= 0 || c.DatabasePoolMaxConns <= 0 {
+		return errors.New("--pool-max-conns and --database-pool-max-conns must be greater than zero")
+	}
+	if c.TxnMaxLifetime <= 0 {
+		return errors.New("--txn-max-lifetime must be greater than zero")
 	}
 	if c.MaxOpenTxns <= 0 {
 		return errors.New("--max-open-txns must be greater than zero")

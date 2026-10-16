@@ -25,8 +25,15 @@ import (
 )
 
 const (
-	minPoolConns     = 16
-	readReserveConns = 8
+	// defaultMaxConns sizes the read pool when WithMaxConns is not given.
+	defaultMaxConns = 16
+	// maxConnIdleTime closes pooled connections unused this long (pgx checks
+	// every minute), so a database nobody is querying holds no connections.
+	maxConnIdleTime = time.Minute
+	// txnIdleGrace is added to the transaction idle timeout for Postgres's
+	// own idle_in_transaction_session_timeout, the backstop should this
+	// process stop reaping.
+	txnIdleGrace     = 30 * time.Second
 	defaultMaxRows   = 1000
 	bootPingTimeout  = 3 * time.Second
 	resetTimeout     = 5 * time.Second
@@ -40,27 +47,52 @@ type execer interface {
 }
 
 // Backend is a Postgres db.Backend backed by lazily connecting pgx pools.
-// read serves queries, explain, metadata and readiness; write serves Begin.
-// They are the same pool unless the backend was built with a separate write
-// DSN (connection-level security).
+// read serves queries, explain and metadata; write serves Begin; probe serves
+// readiness (Ping, TablesExist) and the column snapshot. write is the read
+// pool unless the backend was built with a separate write DSN
+// (connection-level security); probe is the read pool unless WithProbePool.
 type Backend struct {
-	read  *pgxpool.Pool
-	write *pgxpool.Pool
-	pol   *policy.Policy
-	log   *slog.Logger
+	read    *pgxpool.Pool
+	write   *pgxpool.Pool
+	probe   *pgxpool.Pool
+	pol     *policy.Policy
+	log     *slog.Logger
+	txnIdle time.Duration
 }
 
 // Option tunes the backend at construction.
 type Option func(*options)
 
 type options struct {
+	maxConns    int
 	maxOpenTxns int
+	txnIdle     time.Duration
+	probePool   bool
 }
 
-// WithMaxOpenTxns sizes the pool so that this many pinned write
-// transactions still leave connections for reads and readiness probes.
+// WithMaxConns caps the connections used for reads (queries, explain,
+// metadata). The default is 16.
+func WithMaxConns(n int) Option {
+	return func(o *options) { o.maxConns = n }
+}
+
+// WithMaxOpenTxns is the process-wide cap on write transactions, each of
+// which pins a connection. A separate write pool is sized to it; a shared
+// pool gets it on top of the read connections, so writes never starve reads.
 func WithMaxOpenTxns(n int) Option {
 	return func(o *options) { o.maxOpenTxns = n }
+}
+
+// WithTxnIdleTimeout sets idle_in_transaction_session_timeout on write
+// transactions to d plus a grace period.
+func WithTxnIdleTimeout(d time.Duration) Option {
+	return func(o *options) { o.txnIdle = d }
+}
+
+// WithProbePool gives readiness and the column snapshot a one-connection
+// pool of their own, so a saturated read pool cannot fail the probe.
+func WithProbePool() Option {
+	return func(o *options) { o.probePool = true }
 }
 
 // New parses the DSN and creates the pool without requiring the database to
@@ -80,24 +112,40 @@ func NewWithWriteDSN(ctx context.Context, readDSN, writeDSN string, pol *policy.
 		opt(&o)
 	}
 	logger = logger.With("backend", "postgres")
-	read, err := newPool(ctx, readDSN, o)
-	if err != nil {
-		return nil, err
+	reads := o.maxConns
+	if reads <= 0 {
+		reads = defaultMaxConns
 	}
-	write := read
-	if writeDSN != "" {
-		if write, err = newPool(ctx, writeDSN, o); err != nil {
-			read.Close()
+	b := &Backend{pol: pol, log: logger, txnIdle: o.txnIdle}
+	var err error
+	if writeDSN == "" {
+		if b.read, err = newPool(ctx, readDSN, reads+o.maxOpenTxns); err != nil {
+			return nil, err
+		}
+		b.write = b.read
+	} else {
+		if b.read, err = newPool(ctx, readDSN, reads); err != nil {
+			return nil, err
+		}
+		if b.write, err = newPool(ctx, writeDSN, max(o.maxOpenTxns, 1)); err != nil {
+			b.read.Close()
 			return nil, err
 		}
 	}
-	b := &Backend{read: read, write: write, pol: pol, log: logger}
+	b.probe = b.read
+	if o.probePool {
+		if b.probe, err = newPool(ctx, readDSN, 1); err != nil {
+			_ = b.Close()
+			return nil, err
+		}
+	}
 	pingCtx, cancel := context.WithTimeout(ctx, bootPingTimeout)
 	defer cancel()
-	if err := read.Ping(pingCtx); err != nil {
+	if err := b.probe.Ping(pingCtx); err != nil {
 		logger.Warn("postgres unreachable at boot; readiness will retry", "error", err.Error())
 	} else {
-		logger.Debug("postgres reachable at boot", "max_conns", read.Config().MaxConns, "separate_write_pool", write != read)
+		logger.Debug("postgres reachable at boot", "read_max_conns", b.read.Config().MaxConns, "write_max_conns", b.write.Config().MaxConns,
+			"separate_write_pool", b.write != b.read, "probe_pool", b.probe != b.read)
 		if err := b.RefreshColumns(pingCtx); err != nil {
 			logger.Warn("could not load catalog columns at boot; readiness will retry", "error", err.Error())
 		}
@@ -105,21 +153,16 @@ func NewWithWriteDSN(ctx context.Context, readDSN, writeDSN string, pol *policy.
 	return b, nil
 }
 
-func newPool(ctx context.Context, dsn string, o options) (*pgxpool.Pool, error) {
+// newPool creates a lazily connecting pool of at most maxConns connections
+// that sheds connections idle for maxConnIdleTime.
+func newPool(ctx context.Context, dsn string, maxConns int) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("invalid postgres DSN: %w", err)
 	}
-	// Write transactions pin a connection each; keep a reserve above the
-	// cap so they can never starve reads or /readyz.
-	floor := int32(minPoolConns)
-	if n := int32(o.maxOpenTxns + readReserveConns); n > floor {
-		floor = n
-	}
-	if cfg.MaxConns < floor {
-		cfg.MaxConns = floor
-	}
+	cfg.MaxConns = int32(max(maxConns, 1))
 	cfg.MinConns = 0
+	cfg.MaxConnIdleTime = maxConnIdleTime
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create postgres pool: %w", err)
@@ -148,7 +191,7 @@ JOIN unnest($1::text[], $2::text[]) AS want(s, t) ON want.s = n.nspname AND want
 JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
 WHERE c.relkind IN ('r', 'v', 'm', 'p', 'f')
 ORDER BY n.nspname, c.relname, a.attnum`
-	rows, err := b.read.Query(ctx, q, schemas, names)
+	rows, err := b.probe.Query(ctx, q, schemas, names)
 	if err != nil {
 		return fmt.Errorf("load columns: %w", err)
 	}
@@ -173,7 +216,7 @@ ORDER BY n.nspname, c.relname, a.attnum`
 func (b *Backend) Dialect() policy.Dialect { return policy.Postgres }
 
 func (b *Backend) Ping(ctx context.Context) error {
-	err := b.read.Ping(ctx)
+	err := b.probe.Ping(ctx)
 	if err != nil {
 		b.log.Debug("ping failed", "error", err.Error())
 	}
@@ -182,7 +225,10 @@ func (b *Backend) Ping(ctx context.Context) error {
 
 func (b *Backend) Close() error {
 	b.read.Close()
-	if b.write != b.read {
+	if b.probe != nil && b.probe != b.read {
+		b.probe.Close()
+	}
+	if b.write != nil && b.write != b.read {
 		b.write.Close()
 	}
 	return nil
@@ -205,7 +251,7 @@ FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 JOIN unnest($1::text[], $2::text[]) AS want(s, t) ON want.s = n.nspname AND want.t = c.relname
 WHERE c.relkind IN ('r', 'v', 'm', 'p', 'f')`
-	rows, err := b.read.Query(ctx, q, schemas, names)
+	rows, err := b.probe.Query(ctx, q, schemas, names)
 	if err != nil {
 		return nil, fmt.Errorf("check tables: %w", err)
 	}

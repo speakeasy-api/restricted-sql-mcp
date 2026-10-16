@@ -57,30 +57,28 @@ func TestPostgresTunnelOnlyRefusesDirectAccess(t *testing.T) {
 	if resp.StatusCode != 200 || !strings.Contains(respBody, "restrictedsql-mcp") {
 		t.Fatalf("initialize through tunnel: %d %s", resp.StatusCode, respBody)
 	}
-	sessionID := resp.Header.Get("Mcp-Session-Id")
-	if sessionID == "" {
-		t.Fatalf("no Mcp-Session-Id through the tunnel; headers %v", resp.Header)
+	// Stateless MCP (2026-07-28): no session is created or required.
+	if sessionID := resp.Header.Get("Mcp-Session-Id"); sessionID != "" {
+		t.Fatalf("stateless server issued Mcp-Session-Id %q", sessionID)
 	}
 	req, _ = http.NewRequest(http.MethodPost, "http://tunnel/", strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	req.Header.Set("Mcp-Session-Id", sessionID)
 	g.roundTrip(t, sess, req)
 	call := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"execute_sql_readonly","arguments":{"sql":"SELECT count(*) AS n FROM allowed_orders"}}}`
 	req, _ = http.NewRequest(http.MethodPost, "http://tunnel/", strings.NewReader(call))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	req.Header.Set("Mcp-Session-Id", sessionID)
 	resp, respBody = g.roundTrip(t, sess, req)
 	if resp.StatusCode != 200 || !strings.Contains(respBody, `"row_count":1`) {
 		t.Fatalf("tools/call through tunnel: %d %s", resp.StatusCode, respBody)
 	}
 
-	// A session id obtained through the tunnel does not unlock direct access.
+	// A session id does not unlock direct access.
 	req, _ = http.NewRequest(http.MethodPost, s.URL+"/mcp", strings.NewReader(call))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	req.Header.Set("Mcp-Session-Id", sessionID)
+	req.Header.Set("Mcp-Session-Id", "any-session")
 	dresp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("direct request with session id: %v", err)

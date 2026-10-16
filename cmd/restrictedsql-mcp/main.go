@@ -102,7 +102,7 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 	var registry *txn.Registry
 	if pol.WritesEnabled {
 		if txb, ok := backend.(db.TxBackend); ok {
-			registry = txn.New(txb, cfg.TxnIdleTimeout, cfg.MaxOpenTxns, logger)
+			registry = txn.New(txb, cfg.TxnIdleTimeout, cfg.TxnMaxLifetime, cfg.MaxOpenTxns, logger)
 			go registry.RunReaper(ctx)
 			defer registry.Close()
 		} else {
@@ -162,6 +162,7 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 		"max_rows", pol.MaxRows,
 		"statement_timeout", pol.StatementTimeout.String(),
 		"txn_idle_timeout", cfg.TxnIdleTimeout.String(),
+		"txn_max_lifetime", cfg.TxnMaxLifetime.String(),
 		"max_open_txns", cfg.MaxOpenTxns,
 		"tunnel", cfg.Tunnel,
 		"connection_level_security", cfg.ConnectionLevelSecurity,
@@ -220,8 +221,14 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 
 	checker := health.New(backend, pol.AllTables(), runner.State, logger)
 	mux := http.NewServeMux()
+	// Stateless (MCP 2026-07-28): no Mcp-Session-Id, nothing held per client
+	// between requests. The only cross-request state is an open write
+	// transaction, addressed by its transaction_id and bounded by
+	// --txn-idle-timeout and --txn-max-lifetime.
 	var mcpHandler http.Handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
-		Logger: logger,
+		Logger:                       logger,
+		Stateless:                    true,
+		PropagateRequestCancellation: true,
 	})
 	if gate != nil {
 		mcpHandler = gate.Wrap(mcpHandler)
@@ -315,6 +322,20 @@ func closeBackend(backend db.Backend, logger *slog.Logger) {
 	}
 }
 
+// pgOptions sizes a Postgres backend: maxConns read connections, write
+// transactions on top when writes are enabled, and for the default database
+// a probe pool of its own.
+func pgOptions(cfg *config.Config, maxConns int, probePool bool) []pgbackend.Option {
+	opts := []pgbackend.Option{pgbackend.WithMaxConns(maxConns)}
+	if cfg.WritesEnabled {
+		opts = append(opts, pgbackend.WithMaxOpenTxns(cfg.MaxOpenTxns), pgbackend.WithTxnIdleTimeout(cfg.TxnIdleTimeout))
+	}
+	if probePool {
+		opts = append(opts, pgbackend.WithProbePool())
+	}
+	return opts
+}
+
 // localMCPURL is the URL the tunnel agent proxies to. A listener bound to
 // an unspecified address (0.0.0.0, ::, or no host) is reached on loopback.
 func localMCPURL(listen string) string {
@@ -354,7 +375,7 @@ func openDatabase(ctx context.Context, cfg *config.Config, name string, logger *
 		prefix := dbsec.DatabaseRolePrefix(cfg.SecurityRolePrefix, name)
 		prov := &dbsec.PostgresProvisioner{DSN: dsn, Policy: pol, Prefix: prefix, Logger: logger}
 		build := func(ctx context.Context, creds dbsec.Creds) (db.Backend, error) {
-			return pgbackend.NewWithWriteDSN(ctx, creds.ReadDSN, creds.WriteDSN, pol, logger, pgbackend.WithMaxOpenTxns(cfg.MaxOpenTxns))
+			return pgbackend.NewWithWriteDSN(ctx, creds.ReadDSN, creds.WriteDSN, pol, logger, pgOptions(cfg, cfg.DatabasePoolMaxConns, false)...)
 		}
 		gate := dbsec.NewGate(policy.Postgres, prov, build, logger)
 		if err := gate.EnsureProvisioned(ctx); err != nil {
@@ -363,7 +384,7 @@ func openDatabase(ctx context.Context, cfg *config.Config, name string, logger *
 		}
 		inst.Backend, inst.Roles = gate, prov.Roles()
 	} else {
-		backend, err := pgbackend.New(ctx, dsn, pol, logger, pgbackend.WithMaxOpenTxns(cfg.MaxOpenTxns))
+		backend, err := pgbackend.New(ctx, dsn, pol, logger, pgOptions(cfg, cfg.DatabasePoolMaxConns, false)...)
 		if err != nil {
 			return nil, err
 		}
@@ -404,7 +425,7 @@ func selectDialect(ctx context.Context, cfg *config.Config, pol *policy.Policy, 
 			source = &dbsec.PostgresAnnotations{DSN: cfg.DSN, Prefix: prefix, Logger: logger}
 			guard = pgguard.NewWithLogger(logger)
 			build = func(ctx context.Context, creds dbsec.Creds, p *policy.Policy) (db.Backend, error) {
-				return pgbackend.New(ctx, creds.ReadDSN, p, logger)
+				return pgbackend.New(ctx, creds.ReadDSN, p, logger, pgOptions(cfg, cfg.PoolMaxConns, true)...)
 			}
 		case policy.ClickHouse:
 			source = &dbsec.ClickHouseAnnotations{DSN: cfg.DSN, Prefix: prefix, Logger: logger}
@@ -423,11 +444,11 @@ func selectDialect(ctx context.Context, cfg *config.Config, pol *policy.Policy, 
 		if cfg.ConnectionLevelSecurity {
 			prov := &dbsec.PostgresProvisioner{DSN: cfg.DSN, Policy: pol, Prefix: cfg.SecurityRolePrefix, Logger: logger}
 			build := func(ctx context.Context, creds dbsec.Creds) (db.Backend, error) {
-				return pgbackend.NewWithWriteDSN(ctx, creds.ReadDSN, creds.WriteDSN, pol, logger, pgbackend.WithMaxOpenTxns(cfg.MaxOpenTxns))
+				return pgbackend.NewWithWriteDSN(ctx, creds.ReadDSN, creds.WriteDSN, pol, logger, pgOptions(cfg, cfg.PoolMaxConns, true)...)
 			}
 			return dbsec.NewGate(policy.Postgres, prov, build, logger), guard, nil
 		}
-		backend, err := pgbackend.New(ctx, cfg.DSN, pol, logger, pgbackend.WithMaxOpenTxns(cfg.MaxOpenTxns))
+		backend, err := pgbackend.New(ctx, cfg.DSN, pol, logger, pgOptions(cfg, cfg.PoolMaxConns, true)...)
 		if err != nil {
 			return nil, nil, err
 		}

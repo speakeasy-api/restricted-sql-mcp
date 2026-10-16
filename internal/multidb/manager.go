@@ -38,6 +38,10 @@ const (
 	closeTimeout = 2 * time.Second
 	// dropTimeout bounds dropping an evicted instance's roles.
 	dropTimeout = 10 * time.Second
+	// idleAfter is how long a database goes unused before the periodic column
+	// refresh skips it, so its pools shed every connection. Its next use
+	// refreshes the snapshot first.
+	idleAfter = 10 * time.Minute
 )
 
 // ErrUnknownDatabase is returned for databases that are not served: the name
@@ -83,7 +87,7 @@ type Options struct {
 type Info struct {
 	Name    string `json:"name" jsonschema:"database name; pass it as the database argument"`
 	Default bool   `json:"default" jsonschema:"true for the database used when the database argument is omitted"`
-	Open    bool   `json:"open" jsonschema:"true when the server already holds connections to it"`
+	Open    bool   `json:"open" jsonschema:"true once the server has opened it (provisioned roles and created pools); connections are made on demand and closed after a minute unused"`
 }
 
 type call struct {
@@ -106,6 +110,7 @@ type Manager struct {
 	evicting  map[string]chan struct{}
 	lastCheck map[string]time.Time
 	closed    bool
+	now       func() time.Time
 }
 
 // New builds a Manager. It does not touch the database.
@@ -121,6 +126,7 @@ func New(opts Options) *Manager {
 		loading:   map[string]*call{},
 		evicting:  map[string]chan struct{}{},
 		lastCheck: map[string]time.Time{},
+		now:       time.Now,
 	}
 }
 
@@ -293,12 +299,17 @@ func (m *Manager) List(ctx context.Context) ([]Info, error) {
 }
 
 // RefreshColumns reloads the catalog column snapshot of every open
-// additional database, so columns added by a migration become resolvable.
-// Failures are logged; an error that shows the database is gone evicts it.
+// additional database used within idleAfter, so columns added by a migration
+// become resolvable. Idle databases are skipped so they hold no connections;
+// they refresh on their next use. Failures are logged; an error that shows
+// the database is gone evicts it.
 func (m *Manager) RefreshColumns(ctx context.Context) {
 	m.mu.Lock()
 	insts := make([]*Instance, 0, len(m.instances))
 	for _, inst := range m.instances {
+		if w, ok := inst.Backend.(*watched); ok && w.idle() > idleAfter {
+			continue
+		}
 		insts = append(insts, inst)
 	}
 	m.mu.Unlock()

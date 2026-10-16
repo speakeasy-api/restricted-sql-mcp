@@ -39,6 +39,15 @@ func (b *Backend) Begin(ctx context.Context) (db.Tx, error) {
 		t.finish(ctx, "ROLLBACK")
 		return nil, err
 	}
+	if b.txnIdle > 0 {
+		// Backstop for the registry's reaper: Postgres ends the session itself
+		// if the transaction stays idle past the timeout plus a grace period.
+		stmt := fmt.Sprintf("SET LOCAL idle_in_transaction_session_timeout = %d", (b.txnIdle + txnIdleGrace).Milliseconds())
+		if _, err := conn.Exec(ctx, stmt); err != nil {
+			t.finish(ctx, "ROLLBACK")
+			return nil, fmt.Errorf("set idle_in_transaction_session_timeout: %w", err)
+		}
+	}
 	t.log.Debug("tx.begin")
 	return t, nil
 }

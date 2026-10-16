@@ -63,7 +63,10 @@ restrictedsql-mcp \
   --max-rows 1000                        (server cap on rows returned per call)
   --statement-timeout 30s
   --txn-idle-timeout 2m                  (write txn auto-rollback after idle)
-  --max-open-txns 8
+  --txn-max-lifetime 5m                  (write txn auto-rollback this long after begin, however busy)
+  --max-open-txns 8                      (process-wide; each open txn pins one connection)
+  --pool-max-conns 16                    (read connections to the default database)
+  --database-pool-max-conns 4            (read connections to each further --databases database)
   --tunnel                               (start the Speakeasy Control Plane tunnel agent; requires TUNNEL_GATEWAY_URL,
                                           TUNNEL_KEY; TUNNEL_SERVICE_VERSION defaults to the build version)
   --tunnel-only                          (refuse /mcp requests that did not arrive through the in-process
@@ -236,6 +239,8 @@ restrictedsql-mcp --dialect postgres --dsn postgres://bootstrap:…@host:5432/ap
 
 ## Tools
 
+The HTTP transport is stateless (MCP 2026-07-28): no `Mcp-Session-Id`, nothing
+kept per client between requests; see [docs/connection-model.md](docs/connection-model.md).
 All tools take and return JSON. Errors come back as MCP tool errors
 (`isError: true`) with a stable message; rejections name the reason and the
 offending node, table, function, or type so the agent can self-correct.
@@ -288,7 +293,8 @@ indexes are mutually exclusive. ClickHouse runs `EXPLAIN PLAN indexes=1` (or
 The database-level counterpart of `list_schemas`: lists the databases this server
 serves, re-reading the database list on each call so new and dropped databases
 show up. Returns `{ "databases": [{ "name", "default", "open" }] }`; `default`
-marks the DSN's database (used when `"database"` is omitted), `open` whether the server already holds connections to it. Pass a
+marks the DSN's database (used when `"database"` is omitted), `open` whether the server has opened it (provisioned roles, created pools);
+connections are made on demand and closed after a minute unused. Pass a
 `name` as the `"database"` argument of the read tools, the metadata tools and
 `begin_transaction`. Only served databases are listed: other databases on the
 instance are not, and SQL cannot enumerate them because `pg_database` is not
@@ -299,8 +305,10 @@ read-allowlisted. See "Multi-database mode".
 Writes are only possible inside an explicit transaction so the agent can inspect
 the effect before committing.
 
-**`begin_transaction`** — `{}` → `{ "transaction_id", "expires_at" }`
-Pins a dedicated connection. Fails once `--max-open-txns` is reached. With
+**`begin_transaction`** — `{}` → `{ "transaction_id", "expires_at", "ends_at" }`
+Pins a dedicated connection. Fails once `--max-open-txns` is reached.
+`expires_at` is when it is rolled back if left idle (each call pushes it back);
+`ends_at` is when it is rolled back however busy (`--txn-max-lifetime`). With
 `--databases` it takes `"database"?: string` and also returns `"database"`.
 
 **`execute_sql_write`** — `{ "transaction_id", "sql", "max_rows"? }`
@@ -313,13 +321,16 @@ An error leaves the transaction aborted, as Postgres does; roll it back.
 **`commit_transaction`** / **`rollback_transaction`** — `{ "transaction_id" }` → `{ "status" }`
 Release the connection. Unknown or expired ids return an error.
 
-Transactions idle longer than `--txn-idle-timeout` are rolled back by a reaper and
-their id is invalidated. Transactions are process-local, so run one replica.
+Transactions idle longer than `--txn-idle-timeout`, or older than
+`--txn-max-lifetime`, are rolled back by a reaper and their id is invalidated.
+Postgres's `idle_in_transaction_session_timeout` (idle timeout plus 30s) is set on
+each transaction as a backstop. Transactions are process-local, so run one replica.
+See [docs/connection-model.md](docs/connection-model.md).
 
 ### Transaction workflow example
 
 ```
-begin_transaction        {}                                   → {"transaction_id":"…","expires_at":"…"}
+begin_transaction        {}                                   → {"transaction_id":"…","expires_at":"…","ends_at":"…"}
 execute_sql_write        {"transaction_id":"…","sql":"INSERT INTO allowed_audit (note) VALUES ('checked') RETURNING id"}
                                                               → {"rows_affected":1,"rows":[[7]],…}
 execute_sql_write        {"transaction_id":"…","sql":"SELECT count(*) FROM allowed_audit"}

@@ -1,5 +1,5 @@
 // Package txn tracks open write transactions by id and rolls back the ones
-// that go idle.
+// that go idle or outlive their maximum lifetime.
 package txn
 
 import (
@@ -32,6 +32,7 @@ type entry struct {
 	mu       sync.Mutex
 	tx       db.Tx
 	database string // fixed at Begin; empty in single-database use
+	started  time.Time
 	lastUsed time.Time
 	closed   bool
 }
@@ -43,13 +44,16 @@ type Registry struct {
 	pending int
 	backend db.TxBackend
 	idle    time.Duration
+	maxLife time.Duration
 	max     int
 	logger  *slog.Logger
+	now     func() time.Time
 }
 
 // New builds a registry. idle is the inactivity window after which a
-// transaction is rolled back; max caps concurrently open transactions.
-func New(backend db.TxBackend, idle time.Duration, max int, logger *slog.Logger) *Registry {
+// transaction is rolled back, maxLife the time after Begin at which it is
+// rolled back however busy it is; max caps concurrently open transactions.
+func New(backend db.TxBackend, idle, maxLife time.Duration, max int, logger *slog.Logger) *Registry {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -57,13 +61,16 @@ func New(backend db.TxBackend, idle time.Duration, max int, logger *slog.Logger)
 		entries: map[string]*entry{},
 		backend: backend,
 		idle:    idle,
+		maxLife: maxLife,
 		max:     max,
 		logger:  logger,
+		now:     time.Now,
 	}
 }
 
 // Begin opens a transaction on a dedicated connection of the registry's
-// backend and returns its id and the time it expires if left idle.
+// backend and returns its id and the time it expires if left idle (or, if
+// sooner, when its maximum lifetime ends).
 func (r *Registry) Begin(ctx context.Context) (string, time.Time, error) {
 	return r.BeginOn(ctx, r.backend, "")
 }
@@ -96,12 +103,13 @@ func (r *Registry) BeginOn(ctx context.Context, backend db.TxBackend, database s
 		_ = tx.Rollback(ctx)
 		return "", time.Time{}, err
 	}
-	now := time.Now()
-	r.entries[id] = &entry{tx: tx, database: database, lastUsed: now}
+	now := r.now()
+	e := &entry{tx: tx, database: database, started: now, lastUsed: now}
+	r.entries[id] = e
 	open := len(r.entries)
 	r.mu.Unlock()
 
-	expires := now.Add(r.idle)
+	expires := r.deadline(e)
 	r.logger.DebugContext(ctx, "txn.begin", "transaction_id", id, "database", database, "expires_at", expires, "open", open)
 	return id, expires, nil
 }
@@ -133,15 +141,15 @@ func (r *Registry) Exec(ctx context.Context, id, canonicalSQL string, maxRows in
 	if e.closed {
 		return nil, ErrUnknown
 	}
-	if time.Since(e.lastUsed) > r.idle {
-		r.logger.DebugContext(ctx, "txn.expired", "transaction_id", id, "idle", time.Since(e.lastUsed).String())
+	if reason := r.expired(e); reason != "" {
+		r.logger.DebugContext(ctx, "txn.expired", "transaction_id", id, "reason", reason)
 		r.finish(ctx, id, e, "rollback")
 		return nil, ErrUnknown
 	}
-	e.lastUsed = time.Now()
+	e.lastUsed = r.now()
 	start := time.Now()
 	res, err := e.tx.Exec(ctx, canonicalSQL, maxRows)
-	e.lastUsed = time.Now()
+	e.lastUsed = r.now()
 	if err != nil {
 		r.logger.DebugContext(ctx, "txn.exec failed", "transaction_id", id, "database", e.database, "duration", time.Since(start).String(), "error", err.Error())
 		return nil, err
@@ -203,6 +211,32 @@ func (r *Registry) finish(ctx context.Context, id string, e *entry, op string) e
 	return nil
 }
 
+// expired reports why e must be rolled back, or "" if it may continue.
+// The caller holds e.mu.
+func (r *Registry) expired(e *entry) string {
+	now := r.now()
+	if age := now.Sub(e.started); age > r.maxLife {
+		return "max lifetime " + r.maxLife.String() + " reached"
+	}
+	if idle := now.Sub(e.lastUsed); idle > r.idle {
+		return "idle for " + idle.Round(time.Second).String()
+	}
+	return ""
+}
+
+// deadline is when e is rolled back if no further call arrives.
+func (r *Registry) deadline(e *entry) time.Time {
+	idle, life := e.lastUsed.Add(r.idle), e.started.Add(r.maxLife)
+	if life.Before(idle) {
+		return life
+	}
+	return idle
+}
+
+// MaxLifetime is how long after Begin a transaction is rolled back however
+// busy it is.
+func (r *Registry) MaxLifetime() time.Duration { return r.maxLife }
+
 func (r *Registry) lookup(id string) *entry {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -241,12 +275,11 @@ func (r *Registry) reap() {
 		if !e.mu.TryLock() {
 			continue
 		}
-		if !e.closed && time.Since(e.lastUsed) > r.idle {
-			idle := time.Since(e.lastUsed)
+		if reason := r.expired(e); !e.closed && reason != "" {
 			ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
 			err := r.finish(ctx, id, e, "rollback")
 			cancel()
-			r.logger.Info("txn.reaped", "transaction_id", id, "database", e.database, "idle", idle.String(), "error", errString(err))
+			r.logger.Info("txn.reaped", "transaction_id", id, "database", e.database, "reason", reason, "error", errString(err))
 		}
 		e.mu.Unlock()
 	}

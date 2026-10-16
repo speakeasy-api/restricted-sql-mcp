@@ -5,21 +5,42 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync/atomic"
+	"time"
 
 	"github.com/speakeasy-api/restricted-sql-mcp/internal/db"
 	"github.com/speakeasy-api/restricted-sql-mcp/internal/policy"
 )
 
 // watched reports backend errors to the manager so a dropped database is
-// noticed by the call that hits it.
+// noticed by the call that hits it, and records when the database was last
+// used so an idle one is not kept warm.
 type watched struct {
-	m     *Manager
-	inst  *Instance
-	inner db.Backend
+	m        *Manager
+	inst     *Instance
+	inner    db.Backend
+	lastUsed atomic.Int64 // UnixNano
 }
 
 func (m *Manager) watch(inst *Instance) db.Backend {
-	return &watched{m: m, inst: inst, inner: inst.Backend}
+	w := &watched{m: m, inst: inst, inner: inst.Backend}
+	w.lastUsed.Store(m.now().UnixNano())
+	return w
+}
+
+// idle is how long since the database was last used.
+func (w *watched) idle() time.Duration {
+	return w.m.now().Sub(time.Unix(0, w.lastUsed.Load()))
+}
+
+// use marks the database used. After an idle gap the periodic refresh has
+// skipped it, so the column snapshot is reloaded before the call proceeds.
+func (w *watched) use(ctx context.Context) error {
+	prev := time.Unix(0, w.lastUsed.Swap(w.m.now().UnixNano()))
+	if w.m.now().Sub(prev) <= idleAfter {
+		return nil
+	}
+	return w.RefreshColumns(ctx)
 }
 
 // check turns an error that evicted the instance into a clear tool error.
@@ -40,26 +61,41 @@ func (w *watched) TablesExist(ctx context.Context, refs []policy.TableRef) ([]po
 }
 
 func (w *watched) Query(ctx context.Context, canonicalSQL string, maxRows int) (*db.Result, error) {
+	if err := w.use(ctx); err != nil {
+		return nil, err
+	}
 	res, err := w.inner.Query(ctx, canonicalSQL, maxRows)
 	return res, w.check(ctx, err)
 }
 
 func (w *watched) Explain(ctx context.Context, canonicalSQL string, opts db.ExplainOptions) (json.RawMessage, string, error) {
+	if err := w.use(ctx); err != nil {
+		return nil, "", err
+	}
 	planJSON, planText, err := w.inner.Explain(ctx, canonicalSQL, opts)
 	return planJSON, planText, w.check(ctx, err)
 }
 
 func (w *watched) ListSchemas(ctx context.Context) ([]db.Schema, error) {
+	if err := w.use(ctx); err != nil {
+		return nil, err
+	}
 	schemas, err := w.inner.ListSchemas(ctx)
 	return schemas, w.check(ctx, err)
 }
 
 func (w *watched) ListObjects(ctx context.Context, schema, objectType string) ([]db.Object, error) {
+	if err := w.use(ctx); err != nil {
+		return nil, err
+	}
 	objects, err := w.inner.ListObjects(ctx, schema, objectType)
 	return objects, w.check(ctx, err)
 }
 
 func (w *watched) ObjectDetails(ctx context.Context, ref policy.TableRef) (*db.ObjectDetails, error) {
+	if err := w.use(ctx); err != nil {
+		return nil, err
+	}
 	details, err := w.inner.ObjectDetails(ctx, ref)
 	return details, w.check(ctx, err)
 }
@@ -80,6 +116,9 @@ func (w *watched) Begin(ctx context.Context) (db.Tx, error) {
 	txb, ok := w.inner.(db.TxBackend)
 	if !ok {
 		return nil, errors.New("backend has no transaction support")
+	}
+	if err := w.use(ctx); err != nil {
+		return nil, err
 	}
 	tx, err := txb.Begin(ctx)
 	if err != nil {
@@ -102,6 +141,7 @@ func (t *watchedTx) report(err error) {
 }
 
 func (t *watchedTx) Exec(ctx context.Context, canonicalSQL string, maxRows int) (*db.Result, error) {
+	t.w.lastUsed.Store(t.w.m.now().UnixNano())
 	res, err := t.inner.Exec(ctx, canonicalSQL, maxRows)
 	t.report(err)
 	return res, err

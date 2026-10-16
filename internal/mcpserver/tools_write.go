@@ -21,7 +21,8 @@ type BeginInput struct {
 // BeginOutput is the output of begin_transaction.
 type BeginOutput struct {
 	TransactionID string `json:"transaction_id" jsonschema:"opaque id to pass to execute_sql_write, commit_transaction, rollback_transaction"`
-	ExpiresAt     string `json:"expires_at" jsonschema:"RFC3339 time at which the transaction is rolled back if left idle"`
+	ExpiresAt     string `json:"expires_at" jsonschema:"RFC3339 time at which the transaction is rolled back if left idle; each execute_sql_write call pushes it back, up to ends_at"`
+	EndsAt        string `json:"ends_at" jsonschema:"RFC3339 time at which the transaction is rolled back however busy it is (the maximum lifetime); commit before then"`
 	Database      string `json:"database,omitempty" jsonschema:"database the transaction runs in"`
 }
 
@@ -55,7 +56,8 @@ func (s *server) registerWriteTools(srv *mcp.Server) {
 		Name: "begin_transaction",
 		Description: "Open a write transaction on a dedicated connection and return its transaction_id. Every write " +
 			"must run inside a transaction so you can check rows_affected and re-select the changed rows before " +
-			"committing. Idle transactions are rolled back automatically after the configured timeout.",
+			"committing. Transactions are rolled back automatically when idle past expires_at, and in any case at ends_at " +
+			"(the maximum lifetime), so keep them short.",
 		InputSchema: s.inputSchema(jsonschema.For[BeginInput](nil)),
 	}, s.beginTransaction)
 	mcp.AddTool(srv, &mcp.Tool{
@@ -91,12 +93,14 @@ func (s *server) beginTransaction(ctx context.Context, _ *mcp.CallToolRequest, i
 	}
 	ctx, cancel := s.callContext(ctx)
 	defer cancel()
+	// Taken before Begin so the reported end is never later than the real one.
+	ends := time.Now().Add(s.Txns.MaxLifetime())
 	id, expires, err := s.Txns.BeginOn(ctx, txb, s.database)
 	if err != nil {
 		s.Logger.DebugContext(ctx, "begin_transaction failed", "error", err.Error())
 		return fail[BeginOutput](fmt.Errorf("begin_transaction failed: %w", err))
 	}
-	return nil, BeginOutput{TransactionID: id, ExpiresAt: expires.UTC().Format(time.RFC3339), Database: s.database}, nil
+	return nil, BeginOutput{TransactionID: id, ExpiresAt: expires.UTC().Format(time.RFC3339), EndsAt: ends.UTC().Format(time.RFC3339), Database: s.database}, nil
 }
 
 // transaction resolves the database a transaction was begun in and returns
