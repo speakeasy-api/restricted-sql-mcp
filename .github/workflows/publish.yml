@@ -1,7 +1,8 @@
-name: Publish image
+name: Publish main image
 
-# Builds the server image, pushes it to ghcr.io and signs it with cosign
-# (keyless), like the Speakeasy Control Plane tunnel agent. Deploy by digest, not by tag.
+# Builds every commit on main as ghcr.io/speakeasy-api/restricted-sql-mcp:sha-<commit>,
+# signed with cosign (keyless), for deploying unreleased builds by digest.
+# Versioned images (X.Y.Z, X.Y, latest) come from the Release workflow.
 on:
   push:
     branches: [main]
@@ -48,7 +49,6 @@ jobs:
           build-args: VERSION=${{ github.sha }}
           tags: |
             ${{ env.IMAGE }}:sha-${{ github.sha }}
-            ${{ env.IMAGE }}:latest
           labels: |
             org.opencontainers.image.source=https://github.com/speakeasy-api/restricted-sql-mcp
             org.opencontainers.image.description=restricted-sql-mcp: an MCP server giving agents allowlisted SQL over Postgres and ClickHouse

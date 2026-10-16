@@ -390,6 +390,16 @@ tears it down and should be run deliberately.
 access is also tested against the Speakeasy Control Plane's pinned `26.2.19.43`; use a separate Compose
 project and ports when running that version beside the shared stack.
 
+## Releases
+
+Versions follow semver and are cut with [changesets](https://github.com/changesets/changesets):
+add one to every PR that changes the server (`npx changeset`, then pick patch, minor
+or major). On main the Release workflow keeps a "chore: version packages" PR open
+with the version bump and `CHANGELOG.md`; merging it tags `vX.Y.Z`, creates the GitHub
+release and publishes `ghcr.io/speakeasy-api/restricted-sql-mcp:X.Y.Z` (plus `:X.Y`
+and `:latest`), signed with cosign. Every commit on main is also published as
+`:sha-<commit>`. Deploy by digest.
+
 ## Deployment
 
 `deploy/Dockerfile` builds with `golang:1.27-bookworm` (gcc for cgo) and ships a
