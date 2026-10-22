@@ -1,6 +1,6 @@
 {
   "name": "restricted-sql-mcp",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "description": "Release tooling only: changesets versions the server and tags vX.Y.Z; the image is built from the tag.",
   "scripts": {
