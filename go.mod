@@ -1,6 +1,6 @@
 module github.com/speakeasy-api/restricted-sql-mcp
 
-go 1.27.0
+go 1.27.3
 
 require (
 	github.com/AfterShip/clickhouse-sql-parser v0.5.6
@@ -11,7 +11,8 @@ require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/pganalyze/pg_query_go/v6 v6.2.2
-	github.com/speakeasy-api/gram v0.0.0-20260914162705-7fe38bdc5d83
+	github.com/speakeasy-api/gram v0.0.0-20261022135736-1f98a3b3f439
+	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 )
 
 require (
@@ -38,5 +39,4 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 )
