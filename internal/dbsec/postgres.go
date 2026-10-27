@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -30,6 +31,10 @@ type PostgresProvisioner struct {
 	Policy *policy.Policy
 	Prefix string
 	Logger *slog.Logger
+
+	once    sync.Once
+	sem     chan struct{}
+	pending map[policy.TableRef]struct{} // configured tables absent at provisioning
 }
 
 // statement is one provisioning statement and how it is reported.
@@ -43,6 +48,10 @@ func (p *PostgresProvisioner) writeRole() string { return p.Prefix + "_rw" }
 
 // Provision implements Provisioner.
 func (p *PostgresProvisioner) Provision(ctx context.Context) (Creds, error) {
+	if err := p.lock(ctx); err != nil {
+		return Creds{}, err
+	}
+	defer func() { <-p.sem }()
 	log := p.Logger
 	if log == nil {
 		log = slog.Default()
@@ -143,8 +152,14 @@ func (p *PostgresProvisioner) Provision(ctx context.Context) (Creds, error) {
 	if err := tx.Commit(ctx); err != nil {
 		return Creds{}, fmt.Errorf("commit provisioning transaction: %w", err)
 	}
+	p.pending = make(map[policy.TableRef]struct{})
+	for _, ref := range configuredTables {
+		if !existing[ref] {
+			p.pending[ref] = struct{}{}
+		}
+	}
 	summary.Info("postgres roles provisioned", "stale_privileges_revoked", revoked, "password_rotated", true,
-		"missing_tables_skipped", len(configuredTables)-len(existing))
+		"missing_tables_skipped", len(p.pending), "pending_tables", refStrings(sortedRefs(p.pending)))
 
 	creds := Creds{}
 	if creds.ReadDSN, err = RewriteDSN(p.DSN, p.readRole(), roPass); err != nil {
@@ -156,6 +171,87 @@ func (p *PostgresProvisioner) Provision(ctx context.Context) (Creds, error) {
 		}
 	}
 	return creds, nil
+}
+
+// lock serializes provisioning and grant refresh without letting a slow
+// background refresh make another readiness probe exceed its deadline.
+func (p *PostgresProvisioner) lock(ctx context.Context) error {
+	p.once.Do(func() { p.sem = make(chan struct{}, 1) })
+	select {
+	case p.sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// RefreshGrants admits previously missing configured tables once they appear.
+// It only adds grants within the immutable policy; passwords, existing grants,
+// pools and in-flight transactions are left alone. Failed attempts retain the
+// pending set so the next metadata refresh can retry.
+func (p *PostgresProvisioner) RefreshGrants(ctx context.Context) error {
+	if err := p.lock(ctx); err != nil {
+		return err
+	}
+	defer func() { <-p.sem }()
+	if len(p.pending) == 0 {
+		return nil
+	}
+	conn, err := pgx.Connect(ctx, p.DSN)
+	if err != nil {
+		return fmt.Errorf("refresh grants bootstrap connection: %w", err)
+	}
+	defer closePG(conn)
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin grant refresh: %w", err)
+	}
+	defer func() {
+		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = tx.Rollback(rollbackCtx)
+	}()
+	existing, err := existingPolicyTables(ctx, tx, sortedRefs(p.pending))
+	if err != nil || len(existing) == 0 {
+		return err
+	}
+	var readTables, writeTables []policy.TableRef
+	for _, ref := range sortedRefs(p.pending) {
+		if !existing[ref] {
+			continue
+		}
+		if _, ok := p.Policy.ReadTables[ref]; ok {
+			readTables = append(readTables, ref)
+		}
+		if _, ok := p.Policy.WriteTables[ref]; ok && p.Policy.WritesEnabled {
+			writeTables = append(writeTables, ref)
+		}
+	}
+	if err := runStatements(ctx, tx, grantStatements(p.readRole(), readTables, nil, nil)); err != nil {
+		return err
+	}
+	if p.Policy.WritesEnabled {
+		seqs, err := ownedSequences(ctx, tx, writeTables)
+		if err != nil {
+			return err
+		}
+		if err := runStatements(ctx, tx, grantStatements(p.writeRole(), readTables, writeTables, seqs)); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit grant refresh: %w", err)
+	}
+	for ref := range existing {
+		delete(p.pending, ref)
+	}
+	logger := p.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Info("previously missing table grants refreshed", "read_tables", refStrings(readTables),
+		"write_tables", refStrings(writeTables), "pending_tables", refStrings(sortedRefs(p.pending)))
+	return nil
 }
 
 // existingPolicyTables checks existence, not the bootstrap's privileges. A
@@ -173,7 +269,8 @@ func existingPolicyTables(ctx context.Context, tx pgx.Tx, refs []policy.TableRef
 FROM pg_catalog.pg_class c
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 JOIN unnest($1::text[], $2::text[]) AS wanted(schema_name, table_name)
-  ON wanted.schema_name = n.nspname AND wanted.table_name = c.relname`
+  ON wanted.schema_name = n.nspname AND wanted.table_name = c.relname
+WHERE c.relkind IN ('r', 'v', 'm', 'p', 'f')`
 	rows, err := tx.Query(ctx, query, schemas, names)
 	if err != nil {
 		return nil, &StatementError{Statement: "SELECT existing allowlisted tables", Err: err}

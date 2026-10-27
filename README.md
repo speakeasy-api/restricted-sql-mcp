@@ -38,8 +38,6 @@ columns, validates every column use, and serves structural metadata for all
 application tables, including denied ones. See [column access](docs/column-access.md)
 for the supported SQL surface and required migration procedure.
 
-The full policy is in `docs/superpowers/specs/2026-09-14-restricted-sql-mcp-design.md`.
-
 ## Running
 
 ```
@@ -104,6 +102,10 @@ Boot semantics:
   dropped and renamed columns. Wildcard expansion and provisioned grants remain
   startup snapshots: restart to include new wildcard tables or grant access to
   recreated tables. Renamed tables must also match the configured allowlist.
+  Explicitly configured tables that were absent during provisioning receive
+  their grants when a metadata refresh discovers them; passwords and open
+  transactions stay unchanged. Refresh runs on readiness probes for the default
+  database and on periodic/list-databases refresh for additional databases.
   Schema changes do not automatically broaden the configured access policy.
 - Postgres tool queries describe their result on every execution rather than
   caching prepared statement shapes. Repeating `SELECT *` after a column
@@ -165,7 +167,9 @@ succeeds (the whole Postgres sequence runs in one transaction). Each Postgres
 attempt intersects the configured allowlist with the current catalog, omitting
 deleted tables and their sequence grants. Present tables still require the
 bootstrap's grant permissions. Connecting MCP clients reuse these roles rather
-than provisioning per user.
+than provisioning per user. Missing configured table names are logged and
+retried during metadata refresh; permission errors on newly appearing tables
+remain errors and are retried until their bootstrap grants are repaired.
 
 The provisioned roles are:
 

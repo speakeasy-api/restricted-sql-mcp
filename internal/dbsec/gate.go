@@ -99,6 +99,11 @@ func (g *Gate) RefreshColumns(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if refresher, ok := g.prov.(interface{ RefreshGrants(context.Context) error }); ok {
+		if err := refresher.RefreshGrants(ctx); err != nil {
+			return err
+		}
+	}
 	if loader, ok := b.(db.ColumnLoader); ok {
 		return loader.RefreshColumns(ctx)
 	}

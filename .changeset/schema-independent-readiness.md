@@ -7,3 +7,5 @@ Simplify readiness to check database connectivity, security provisioning and met
 Postgres tool queries no longer cache prepared statement result shapes, so repeated SELECT * and RETURNING * queries tolerate column migrations.
 
 Postgres provisioning rechecks the catalog on every attempt and skips deleted allowlisted tables, so stale configuration does not block startup or retries.
+
+Previously missing, explicitly configured Postgres tables receive grants when metadata refresh discovers them, without rotating passwords or interrupting active transactions.
