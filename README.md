@@ -161,7 +161,13 @@ What the bootstrap DSN needs:
   (the `default` user with `access_management=1` has both).
 
 What gets created, on every boot and again on every `/readyz` probe until it
-succeeds (the whole Postgres sequence runs in one transaction):
+succeeds (the whole Postgres sequence runs in one transaction). Each Postgres
+attempt intersects the configured allowlist with the current catalog, omitting
+deleted tables and their sequence grants. Present tables still require the
+bootstrap's grant permissions. Connecting MCP clients reuse these roles rather
+than provisioning per user.
+
+The provisioned roles are:
 
 - Postgres `restrictedsql_ro` (`--security-role-prefix` changes the prefix):
   `LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION`, role-level
