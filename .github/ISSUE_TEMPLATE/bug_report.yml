@@ -1,0 +1,31 @@
+name: Bug report
+description: Report a reproducible problem using synthetic data.
+body:
+  - type: markdown
+    attributes:
+      value: For security issues, email security@speakeasy.com instead of filing a public report. Remove credentials and real database contents.
+  - type: input
+    id: version
+    attributes:
+      label: Server version or commit
+    validations:
+      required: true
+  - type: input
+    id: database
+    attributes:
+      label: Database dialect and version
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include relevant flags and synthetic SQL/schema. Remove secrets.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
