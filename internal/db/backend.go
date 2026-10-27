@@ -112,8 +112,6 @@ type Backend interface {
 	Dialect() policy.Dialect
 	// Ping checks connectivity; used by /readyz.
 	Ping(ctx context.Context) error
-	// TablesExist returns the subset of refs that do not exist.
-	TablesExist(ctx context.Context, refs []policy.TableRef) (missing []policy.TableRef, err error)
 	// Query runs canonical read-only SQL under the read-only session protections
 	// and returns at most maxRows rows (Truncated set when more were available).
 	Query(ctx context.Context, canonicalSQL string, maxRows int) (*Result, error)

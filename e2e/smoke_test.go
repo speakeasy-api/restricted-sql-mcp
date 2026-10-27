@@ -87,10 +87,10 @@ func TestPostgresHealthzReadyz(t *testing.T) {
 	}
 }
 
-func TestPostgresReadyzFalseWhenTableMissing(t *testing.T) {
-	s := bootServer(t, ServerOpts{Dialect: "postgres", ReadTables: []string{"allowed_orders", "nope"}, ExpectReady: boolPtr(false)})
+func TestPostgresReadyzToleratesMissingTable(t *testing.T) {
+	s := bootServer(t, ServerOpts{Dialect: "postgres", ReadTables: []string{"allowed_orders", "nope"}})
 	status, body := httpGet(t, s.URL+"/readyz")
-	if status != 503 || !strings.Contains(body, `"ready":false`) || !strings.Contains(body, "public.nope") {
+	if status != 200 || !strings.Contains(body, `"ready":true`) {
 		t.Fatalf("/readyz = %d %s", status, body)
 	}
 	status, _ = httpGet(t, s.URL+"/healthz")
@@ -150,10 +150,10 @@ func TestClickHouseHealthzReadyz(t *testing.T) {
 	}
 }
 
-func TestClickHouseReadyzFalseWhenTableMissing(t *testing.T) {
-	s := bootServer(t, ServerOpts{Dialect: "clickhouse", ReadTables: []string{"allowed_orders", "nope"}, ExpectReady: boolPtr(false)})
+func TestClickHouseReadyzToleratesMissingTable(t *testing.T) {
+	s := bootServer(t, ServerOpts{Dialect: "clickhouse", ReadTables: []string{"allowed_orders", "nope"}})
 	status, body := httpGet(t, s.URL+"/readyz")
-	if status != 503 || !strings.Contains(body, "app.nope") {
+	if status != 200 || !strings.Contains(body, `"ready":true`) {
 		t.Fatalf("/readyz = %d %s", status, body)
 	}
 }

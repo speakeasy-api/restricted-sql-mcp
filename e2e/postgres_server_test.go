@@ -45,25 +45,95 @@ func TestPostgresReadyzWhenDatabaseFrozen(t *testing.T) {
 	}
 }
 
-// TestPostgresReadyzRecoversWhenTableCreated checks readiness is
-// re-evaluated per probe: a missing allowlisted table flips /readyz to 200
-// once created and back to 503 once dropped.
-func TestPostgresReadyzRecoversWhenTableCreated(t *testing.T) {
+// Missing tables affect only queries using them; creating or dropping an
+// explicitly allowed table does not change the health of the whole server.
+func TestPostgresReadyzToleratesTableCreationAndDrop(t *testing.T) {
 	probe := pgProbe(t)
 	table := uniqueName("e2e_late")
 	t.Cleanup(func() { execSQL(t, probe, "DROP TABLE IF EXISTS "+table) })
-	s := bootServer(t, ServerOpts{ReadTables: []string{"allowed_orders", table}, ExpectReady: boolPtr(false)})
-	if body := waitReadyz(t, s.URL, 503, 5*time.Second); !strings.Contains(body, "public."+table) {
-		t.Fatalf("/readyz body %q does not name the missing table", body)
-	}
+	s := bootServer(t, ServerOpts{ReadTables: []string{"allowed_orders", table}})
+	waitReadyz(t, s.URL, 200, 5*time.Second)
+	s.mustReject(t, "execute_sql_readonly", map[string]any{"sql": "SELECT id FROM " + table}, "")
 	execSQL(t, probe, "CREATE TABLE "+table+" (id int)")
 	waitReadyz(t, s.URL, 200, 10*time.Second)
 	if r := rows(t, s.mustCall(t, "execute_sql_readonly", map[string]any{"sql": "SELECT count(*) FROM " + table})); r[0][0] != float64(0) {
 		t.Fatalf("query on late table = %v", r)
 	}
 	execSQL(t, probe, "DROP TABLE "+table)
-	if body := waitReadyz(t, s.URL, 503, 10*time.Second); !strings.Contains(body, "public."+table) {
-		t.Fatalf("/readyz body %q after drop", body)
+	waitReadyz(t, s.URL, 200, 5*time.Second)
+	s.mustReject(t, "execute_sql_readonly", map[string]any{"sql": "SELECT id FROM " + table}, "")
+	s.mustCall(t, "execute_sql_readonly", map[string]any{"sql": "SELECT id FROM allowed_orders"})
+}
+
+// Exercise DDL while serving with both explicit and wildcard policies, with
+// and without the read/write role provisioning used by Gram.
+func TestPostgresReadyzToleratesSchemaChanges(t *testing.T) {
+	for _, wildcard := range []bool{false, true} {
+		for _, secure := range []bool{false, true} {
+			t.Run(fmt.Sprintf("wildcard=%t/security=%t", wildcard, secure), func(t *testing.T) {
+				c, schema := annotationPG(t)
+				for _, sql := range []string{
+					"CREATE TABLE " + schema + ".retired (id int)",
+					"CREATE TABLE " + schema + ".survivor (id int, legacy text)",
+					"INSERT INTO " + schema + ".survivor VALUES (1, 'old')",
+				} {
+					execSQL(t, c, sql)
+				}
+				tables := []string{schema + ".retired", schema + ".survivor"}
+				if wildcard {
+					tables = []string{schema + ".*"}
+				}
+				opts := ServerOpts{ReadTables: tables, WriteTables: tables, Writes: true,
+					ExtraArgs: []string{"--default-schema", schema}}
+				if secure {
+					opts.ExtraArgs = append(opts.ExtraArgs, "--connection-level-security", "--security-role-prefix", uniqueName("rsql_schema"))
+				}
+				s := bootServer(t, opts)
+				s.mustCall(t, "execute_sql_readonly", map[string]any{"sql": "SELECT * FROM survivor"})
+				checkHealthy := func() {
+					t.Helper()
+					for _, path := range []string{"/healthz", "/readyz"} {
+						if status, body := tryGet(s.URL + path); status != 200 {
+							t.Fatalf("%s after schema change = %d %s, want 200", path, status, body)
+						}
+					}
+				}
+				s.mustCall(t, "execute_sql_readonly", map[string]any{"sql": "SELECT id FROM retired"})
+				execSQL(t, c, "DROP TABLE "+schema+".retired")
+				checkHealthy()
+				s.mustReject(t, "execute_sql_readonly", map[string]any{"sql": "SELECT id FROM retired"}, "")
+
+				execSQL(t, c, "ALTER TABLE "+schema+".survivor DROP COLUMN legacy, ADD COLUMN replacement int DEFAULT 7")
+				checkHealthy()
+				s.mustCall(t, "execute_sql_readonly", map[string]any{"sql": "SELECT * FROM survivor"})
+				out := s.mustCall(t, "execute_sql_readonly", map[string]any{"sql": "SELECT replacement FROM survivor"})
+				if got := rows(t, out)[0][0]; got != float64(7) {
+					t.Fatalf("new column = %v, want 7", got)
+				}
+				s.mustReject(t, "execute_sql_readonly", map[string]any{"sql": "SELECT legacy FROM survivor"}, "")
+				id := beginTx(t, s)
+				s.mustCall(t, "execute_sql_write", map[string]any{"transaction_id": id, "sql": "UPDATE survivor SET replacement = 8 WHERE id = 1"})
+				s.mustCall(t, "rollback_transaction", map[string]any{"transaction_id": id})
+
+				execSQL(t, c, "ALTER TABLE "+schema+".survivor RENAME COLUMN replacement TO renamed")
+				checkHealthy()
+				s.mustCall(t, "execute_sql_readonly", map[string]any{"sql": "SELECT renamed FROM survivor"})
+				s.mustCall(t, "execute_sql_readonly", map[string]any{"sql": "SELECT * FROM survivor"})
+				execSQL(t, c, "ALTER TABLE "+schema+".survivor ALTER COLUMN id TYPE bigint")
+				checkHealthy()
+				s.mustCall(t, "execute_sql_readonly", map[string]any{"sql": "SELECT * FROM survivor"})
+				s.mustReject(t, "execute_sql_readonly", map[string]any{"sql": "SELECT replacement FROM survivor"}, "")
+
+				execSQL(t, c, "ALTER TABLE "+schema+".survivor RENAME TO renamed_table")
+				checkHealthy()
+				s.mustReject(t, "execute_sql_readonly", map[string]any{"sql": "SELECT id FROM survivor"}, "")
+				// A rename or new table does not extend the boot-time access snapshot.
+				s.mustReject(t, "execute_sql_readonly", map[string]any{"sql": "SELECT id FROM renamed_table"}, "allowlist")
+				execSQL(t, c, "CREATE TABLE "+schema+".new_table (id int)")
+				checkHealthy()
+				s.mustReject(t, "execute_sql_readonly", map[string]any{"sql": "SELECT id FROM new_table"}, "allowlist")
+			})
+		}
 	}
 }
 

@@ -99,6 +99,11 @@ func (g *Gate) RefreshColumns(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if refresher, ok := g.prov.(interface{ RefreshGrants(context.Context) error }); ok {
+		if err := refresher.RefreshGrants(ctx); err != nil {
+			return err
+		}
+	}
 	if loader, ok := b.(db.ColumnLoader); ok {
 		return loader.RefreshColumns(ctx)
 	}
@@ -111,14 +116,6 @@ func (g *Gate) Ping(ctx context.Context) error {
 		return err
 	}
 	return b.Ping(ctx)
-}
-
-func (g *Gate) TablesExist(ctx context.Context, refs []policy.TableRef) ([]policy.TableRef, error) {
-	b, err := g.backend(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return b.TablesExist(ctx, refs)
 }
 
 func (g *Gate) Query(ctx context.Context, canonicalSQL string, maxRows int) (*db.Result, error) {

@@ -215,7 +215,7 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 		}
 	}
 
-	checker := health.New(backend, pol.AllTables(), runner.State, logger)
+	checker := health.New(backend, runner.State, logger)
 	mux := http.NewServeMux()
 	// Stateless (MCP 2026-07-28): no Mcp-Session-Id, nothing held per client
 	// between requests. The only cross-request state is an open write

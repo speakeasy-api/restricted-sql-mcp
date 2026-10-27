@@ -262,9 +262,6 @@ func (g *AnnotationGate) Ping(ctx context.Context) error {
 	}
 	return b.Ping(ctx)
 }
-func (g *AnnotationGate) TablesExist(ctx context.Context, refs []policy.TableRef) ([]policy.TableRef, error) {
-	return nil, g.Ping(ctx)
-}
 
 // AcquireData holds one generation until the handler has constructed its result.
 // Finish both releases the lease and reports invalidation, so canceled results

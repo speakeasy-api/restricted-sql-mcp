@@ -55,11 +55,6 @@ func (w *watched) Dialect() policy.Dialect { return w.inner.Dialect() }
 
 func (w *watched) Ping(ctx context.Context) error { return w.check(ctx, w.inner.Ping(ctx)) }
 
-func (w *watched) TablesExist(ctx context.Context, refs []policy.TableRef) ([]policy.TableRef, error) {
-	missing, err := w.inner.TablesExist(ctx, refs)
-	return missing, w.check(ctx, err)
-}
-
 func (w *watched) Query(ctx context.Context, canonicalSQL string, maxRows int) (*db.Result, error) {
 	if err := w.use(ctx); err != nil {
 		return nil, err
