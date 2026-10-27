@@ -91,14 +91,27 @@ Boot semantics:
   `--health-listen` with stdio or equal to `--listen`, and a zero or negative
   `--txn-max-lifetime`, `--pool-max-conns` or `--database-pool-max-conns`.
   The pool flags override any `pool_max_conns` in the DSN.
-- An unreachable database or a missing allowlisted table does **not** fail boot.
-  The server starts, `/readyz` answers 503 with the reason, and readiness is
-  re-evaluated on every probe.
-- `GET /healthz` is 200 once the process serves. `GET /readyz` is 200 when the
-  database answers a ping and every allowlisted table exists (and, with
-  `--connection-level-security`, the roles have been provisioned), else 503 with
-  `{"ready":false,"reason":"..."}`. The body also carries
-  `"tunnel":"disabled|connecting|connected|stopped"`, which does not gate readiness.
+- `GET /healthz` reports liveness: 200 once the process serves, independently of
+  database availability or schema contents.
+- `GET /readyz` reports readiness: 200 when the database answers a ping, security
+  provisioning has succeeded (if enabled), and the column metadata refresh
+  succeeds. Otherwise it returns 503 with `{"ready":false,"reason":"..."}` and
+  retries on the next probe. Once security setup succeeds, missing, dropped or
+  renamed tables affect queries using those tables, not readiness of the whole
+  server. An unreachable database
+  or a provisioning failure remains unready without terminating the process.
+- Readiness refreshes column metadata, so surviving tables pick up added,
+  dropped and renamed columns. Wildcard expansion and provisioned grants remain
+  startup snapshots: restart to include new wildcard tables or grant access to
+  recreated tables. Renamed tables must also match the configured allowlist.
+  Schema changes do not automatically broaden the configured access policy.
+- Postgres tool queries describe their result on every execution rather than
+  caching prepared statement shapes. Repeating `SELECT *` after a column
+  migration therefore uses the current column names and types. This costs one
+  additional database round trip per tool query.
+- The readiness body carries `"tunnel":"disabled|connecting|connected|stopped"`,
+  which does not gate readiness. `--health-listen` exposes only the two fixed
+  probe endpoints on a separate listener; it never exposes `/mcp`.
 - Logs are JSON on stdout (stderr for the stdio transport, where stdout carries the
   protocol). At `debug` they include raw and canonical SQL, referenced tables,
   rejection reasons, timings, and transaction lifecycle events. The DSN is never

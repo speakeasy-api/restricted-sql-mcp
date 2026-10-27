@@ -25,6 +25,11 @@ import (
 )
 
 const (
+	// Tool queries are ad hoc and may outlive schema migrations. Describe each
+	// execution instead of caching a prepared statement's result shape. This
+	// keeps binary decoding while avoiding stale SELECT * / RETURNING * plans.
+	toolQueryMode = pgx.QueryExecModeDescribeExec
+
 	// defaultMaxConns sizes the read pool when WithMaxConns is not given.
 	defaultMaxConns = 16
 	// maxConnIdleTime closes pooled connections unused this long (pgx checks
@@ -48,7 +53,7 @@ type execer interface {
 
 // Backend is a Postgres db.Backend backed by lazily connecting pgx pools.
 // read serves queries, explain and metadata; write serves Begin; probe serves
-// readiness (Ping, TablesExist) and the column snapshot. write is a pool of
+// readiness (Ping) and the column snapshot. write is a pool of
 // its own whenever writes are possible (it uses the write DSN under
 // connection-level security, else the read DSN); probe is the read pool
 // unless WithProbePool.
@@ -238,49 +243,6 @@ func (b *Backend) Close() error {
 	return nil
 }
 
-// TablesExist returns the refs that are not a table, view, materialized view,
-// partitioned table or foreign table.
-func (b *Backend) TablesExist(ctx context.Context, refs []policy.TableRef) ([]policy.TableRef, error) {
-	if len(refs) == 0 {
-		return nil, nil
-	}
-	schemas := make([]string, len(refs))
-	names := make([]string, len(refs))
-	for i, r := range refs {
-		schemas[i], names[i] = r.Schema, r.Name
-	}
-	const q = `
-SELECT n.nspname, c.relname
-FROM pg_class c
-JOIN pg_namespace n ON n.oid = c.relnamespace
-JOIN unnest($1::text[], $2::text[]) AS want(s, t) ON want.s = n.nspname AND want.t = c.relname
-WHERE c.relkind IN ('r', 'v', 'm', 'p', 'f')`
-	rows, err := b.probe.Query(ctx, q, schemas, names)
-	if err != nil {
-		return nil, fmt.Errorf("check tables: %w", err)
-	}
-	defer rows.Close()
-	found := map[policy.TableRef]struct{}{}
-	for rows.Next() {
-		var s, t string
-		if err := rows.Scan(&s, &t); err != nil {
-			return nil, err
-		}
-		found[policy.TableRef{Schema: s, Name: t}] = struct{}{}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("check tables: %w", err)
-	}
-	var missing []policy.TableRef
-	for _, r := range refs {
-		if _, ok := found[r]; !ok {
-			missing = append(missing, r)
-		}
-	}
-	b.log.Debug("tables checked", "wanted", len(refs), "missing", missing)
-	return missing, nil
-}
-
 // beginReadOnly opens a READ ONLY transaction with the session protections
 // applied. The caller must Rollback it.
 func (b *Backend) beginReadOnly(ctx context.Context) (*pgxpool.Conn, pgx.Tx, error) {
@@ -337,7 +299,7 @@ func (b *Backend) Query(ctx context.Context, canonicalSQL string, maxRows int) (
 	defer conn.Release()
 	defer rollbackQuietly(tx)
 
-	rows, err := tx.Query(ctx, canonicalSQL)
+	rows, err := tx.Query(ctx, canonicalSQL, toolQueryMode)
 	if err != nil {
 		log.Debug("query.failed", "error", err.Error(), "duration", time.Since(start))
 		return nil, err
@@ -408,7 +370,7 @@ func (b *Backend) Explain(ctx context.Context, canonicalSQL string, opts db.Expl
 	}
 	explain += ") " + canonicalSQL
 	var plan []byte
-	if err := tx.QueryRow(ctx, explain).Scan(&plan); err != nil {
+	if err := tx.QueryRow(ctx, explain, toolQueryMode).Scan(&plan); err != nil {
 		log.Debug("explain.failed", "error", err.Error(), "duration", time.Since(start))
 		return nil, "", err
 	}

@@ -113,14 +113,6 @@ func (g *Gate) Ping(ctx context.Context) error {
 	return b.Ping(ctx)
 }
 
-func (g *Gate) TablesExist(ctx context.Context, refs []policy.TableRef) ([]policy.TableRef, error) {
-	b, err := g.backend(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return b.TablesExist(ctx, refs)
-}
-
 func (g *Gate) Query(ctx context.Context, canonicalSQL string, maxRows int) (*db.Result, error) {
 	b, err := g.backend(ctx)
 	if err != nil {

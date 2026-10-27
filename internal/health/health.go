@@ -7,11 +7,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/speakeasy-api/restricted-sql-mcp/internal/db"
-	"github.com/speakeasy-api/restricted-sql-mcp/internal/policy"
 )
 
 // probeTimeout bounds one readiness evaluation so a hung database cannot
@@ -21,21 +19,21 @@ const probeTimeout = 3 * time.Second
 // Checker evaluates readiness on every probe.
 type Checker struct {
 	backend     db.Backend
-	tables      []policy.TableRef
 	tunnelState func() string
 	timeout     time.Duration
 	logger      *slog.Logger
 }
 
-// New builds a checker. tunnelState may be nil, which reports "disabled".
-func New(b db.Backend, tables []policy.TableRef, tunnelState func() string, logger *slog.Logger) *Checker {
+// New builds a checker with a fixed liveness and readiness contract.
+// tunnelState may be nil, which reports "disabled".
+func New(b db.Backend, tunnelState func() string, logger *slog.Logger) *Checker {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if tunnelState == nil {
 		tunnelState = func() string { return "disabled" }
 	}
-	return &Checker{backend: b, tables: tables, tunnelState: tunnelState, timeout: probeTimeout, logger: logger}
+	return &Checker{backend: b, tunnelState: tunnelState, timeout: probeTimeout, logger: logger}
 }
 
 // Healthz reports liveness: 200 once the process is serving.
@@ -49,8 +47,8 @@ type readiness struct {
 	Tunnel string `json:"tunnel"`
 }
 
-// Readyz reports readiness: the database answers a ping and every
-// allowlisted table exists. Readiness is re-evaluated on each probe.
+// Readyz reports readiness: database connectivity, security provisioning and
+// metadata refresh succeed. Individual missing tables do not gate the server.
 func (c *Checker) Readyz(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), c.timeout)
 	defer cancel()
@@ -82,26 +80,12 @@ func (c *Checker) evaluate(ctx context.Context) string {
 	if err := c.backend.Ping(ctx); err != nil {
 		return "db ping failed: " + err.Error()
 	}
-	if len(c.tables) == 0 {
-		return ""
-	}
 	// Each probe also refreshes the column snapshot so a database that was
 	// unreachable at boot, or a schema change, is picked up without a restart.
 	if loader, ok := c.backend.(db.ColumnLoader); ok {
 		if err := loader.RefreshColumns(ctx); err != nil {
 			return "column load failed: " + err.Error()
 		}
-	}
-	missing, err := c.backend.TablesExist(ctx, c.tables)
-	if err != nil {
-		return "table check failed: " + err.Error()
-	}
-	if len(missing) > 0 {
-		names := make([]string, 0, len(missing))
-		for _, m := range missing {
-			names = append(names, m.String())
-		}
-		return "missing tables: " + strings.Join(names, ", ")
 	}
 	return ""
 }

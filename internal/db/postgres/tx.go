@@ -64,7 +64,7 @@ func (t *tx) Exec(ctx context.Context, canonicalSQL string, maxRows int) (*db.Re
 	maxRows = t.b.capRows(maxRows)
 	log := t.log.With("sql", truncate(canonicalSQL), "max_rows", maxRows)
 	log.Debug("tx.exec.start")
-	rows, err := t.conn.Query(ctx, canonicalSQL)
+	rows, err := t.conn.Query(ctx, canonicalSQL, toolQueryMode)
 	if err != nil {
 		log.Debug("tx.exec.failed", "error", err.Error(), "duration", time.Since(start))
 		return nil, err

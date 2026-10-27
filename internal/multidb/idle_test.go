@@ -17,9 +17,6 @@ func (c *countingBackend) Ping(context.Context) error                       { re
 func (c *countingBackend) RefreshColumns(context.Context) error             { c.refreshes++; return nil }
 func (c *countingBackend) Close() error                                     { return nil }
 func (c *countingBackend) ListSchemas(context.Context) ([]db.Schema, error) { return nil, nil }
-func (c *countingBackend) TablesExist(context.Context, []policy.TableRef) ([]policy.TableRef, error) {
-	return nil, nil
-}
 func (c *countingBackend) Query(context.Context, string, int) (*db.Result, error) {
 	c.queries++
 	return &db.Result{}, nil
