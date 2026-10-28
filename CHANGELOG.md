@@ -1,5 +1,11 @@
 # restricted-sql-mcp
 
+## 0.2.5
+
+### Patch Changes
+
+- c5b8082: License the project under GNU AGPL version 3, matching the embedded Gram tunnel dependency. Include license notices in container images, declare the SPDX license in package and image metadata, and add contribution and private security reporting guidance for public use.
+
 ## 0.2.4
 
 ### Patch Changes
