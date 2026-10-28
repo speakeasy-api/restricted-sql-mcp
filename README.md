@@ -1,460 +1,221 @@
-# restrictedsql-mcp
+<img src="docs/assets/readme-hero.svg" alt="Restricted SQL MCP by Speakeasy. SQL access with explicit limits. PostgreSQL and ClickHouse." width="1200" />
 
-An MCP server that gives an agent SQL access to a Postgres or ClickHouse database,
-restricted by either an explicit table allowlist or per-column access annotations,
-and a safe subset of SQL. Every
-statement is parsed into an AST, validated against the policy, and re-serialized
-from the AST. The database only ever receives that canonical form, never the raw
-input.
+# Restricted SQL MCP
 
-Primary use case: let an agent inspect data and debug slow queries (introspection
-and explain) with no way to touch anything outside the allowlist.
+Give an agent SQL access to Postgres or ClickHouse, with the tables, columns,
+and statements it can use defined in policy.
 
-## Security model
+Queries are parsed into an AST, checked against that policy, and rebuilt as
+canonical SQL before reaching the database. Reads are the default. Postgres
+writes are opt-in and run inside explicit transactions.
 
-1. **Parse.** Postgres statements go through `pg_query_go` (the real Postgres
-   grammar via libpg_query); ClickHouse statements go through
-   `clickhouse-sql-parser`.
-2. **Allowlist walk.** A fail-closed visitor checks every AST node. Unknown node
-   types, statement kinds, functions, cast types, table functions, and any table
-   outside the allowlist are rejected with the offending node named.
-3. **Deparse.** The canonical SQL is regenerated from the validated AST with every
-   table reference fully qualified as `schema.table`. Comments and unmodelled
-   syntax cannot survive the round trip.
-4. **Session protections.** Postgres read tools run inside `BEGIN READ ONLY` with
-   `statement_timeout` and `search_path` pinned; ClickHouse read tools run with
-   `readonly=1`, `max_execution_time`, and `max_result_rows`.
-5. **No inbound path.** The listener binds loopback by default. The only ingress is
-   The Speakeasy Control Plane tunnel agent, which dials out and proxies to the local `/mcp`.
+[Quick start](#quick-start) · [Configuration](docs/configuration.md) · [Tools](docs/tools.md) · [Contributing](CONTRIBUTING.md) · [AGPL v3](LICENSE)
 
-Second layer, independent of the guard: `--connection-level-security` makes the
-server provision database roles that hold exactly the grants the allowlist needs
-and run every tool call as those roles (see below). Without the flag, point the
-DSN at such a role yourself. Either way the server does not depend on it, but it
-makes a bug in the guard non-fatal.
+## What it does
 
-Column annotation mode requires this second layer. It grants only selected
-columns, validates every column use, and serves structural metadata for all
-application tables, including denied ones. See [column access](docs/column-access.md)
-for the supported SQL surface and required migration procedure.
+| Boundary | Behavior |
+| --- | --- |
+| Tables | Read and write allowlists, with fully qualified relation names. |
+| Columns | Optional access classes from column annotations; missing annotations deny data access. |
+| SQL | An AST visitor rejects unsupported statements, functions, types, and relations. |
+| Database roles | Optional provisioning of restricted roles, separate from SQL validation. Required for annotation mode. |
+| Writes | Postgres `INSERT`, `UPDATE`, and `DELETE`, inside a transaction you explicitly commit or roll back. |
+| Transport | stdio, loopback HTTP, or an optional outbound Speakeasy Control Plane tunnel. |
+
+A Speakeasy account is not required for stdio or direct loopback HTTP.
+
+## Quick start
+
+You need the Go version in [go.mod](go.mod) and a C compiler. The Postgres parser
+uses cgo.
+
+```sh
+git clone https://github.com/speakeasy-api/restricted-sql-mcp.git
+cd restricted-sql-mcp
+go build -o bin/restrictedsql-mcp ./cmd/restrictedsql-mcp
+```
+
+Point the server at a database role with access to the intended tables. The URL
+below is an example; supply your own credentials through your environment.
+
+```sh
+export DATABASE_URL='postgres://readonly:change-me@127.0.0.1:5432/app?sslmode=require'
+
+./bin/restrictedsql-mcp \
+  --dialect=postgres \
+  --transport=stdio \
+  --read-tables=public.orders,public.customers
+```
+
+For ClickHouse, use `--dialect=clickhouse`, a ClickHouse connection URL, and
+allowlist names such as `app.orders`. ClickHouse is read-only.
+
+### Connect an MCP client
+
+Configure your client to launch the binary. Pass `DATABASE_URL` using the client's
+environment or secret configuration; do not commit database credentials.
+
+```json
+{
+  "mcpServers": {
+    "restricted-sql": {
+      "command": "/absolute/path/to/bin/restrictedsql-mcp",
+      "args": [
+        "--dialect=postgres",
+        "--transport=stdio",
+        "--read-tables=public.orders,public.customers"
+      ]
+    }
+  }
+}
+```
 
 ## Running
 
-```
-restrictedsql-mcp \
-  --dialect postgres|clickhouse          (required)
-  --dsn <url>                            (or env DATABASE_URL; required)
-  --read-tables schema.t1,schema.t2      (required in static table mode)
-  --columns-from-annotations confidential (alternative to read-tables; readable @access classes, e.g. confidential;
-                                          requires connection-level-security; read-only)
-  --annotation-refresh-interval 30s      (annotation catalog/grant refresh; HTTP and stdio)
-  --annotation-refresh-timeout 10s       (bounds refresh and active-query draining)
-  --write-tables schema.t3               (optional; used only with write tools)
-                                         (<schema>.* in either list adds every table in the schema
-                                          at boot; postgres only; restart to pick up new tables)
-  --dangerously-add-write-tools          (registers the 4 write tools; Postgres only)
-  --default-schema public                (schema for unqualified names;
-                                          ClickHouse: database from the DSN, else "default")
-  --transport http|stdio                 (default http)
-  --listen 127.0.0.1:8080                (http transport; MCP at /mcp, health at /healthz /readyz)
-  --health-listen 0.0.0.0:8081           (optional second listener serving only /healthz and /readyz)
-  --max-rows 1000                        (server cap on rows returned per call)
-  --statement-timeout 30s
-  --txn-idle-timeout 2m                  (write txn auto-rollback after idle)
-  --txn-max-lifetime 5m                  (write txn auto-rollback this long after begin, however busy)
-  --max-open-txns 8                      (process-wide; each open txn pins one connection)
-  --pool-max-conns 16                    (read connections to the default database)
-  --database-pool-max-conns 4            (read connections to each further --databases database)
-  --tunnel                               (start the Speakeasy Control Plane tunnel agent; requires TUNNEL_GATEWAY_URL,
-                                          TUNNEL_KEY; TUNNEL_SERVICE_VERSION defaults to the build version)
-  --tunnel-only                          (refuse /mcp requests that did not arrive through the in-process
-                                          tunnel agent; direct loopback access gets 401; requires --tunnel)
-  --connection-level-security            (treat the DSN as a bootstrap connection, provision
-                                          least-privilege roles and run tool traffic as them;
-                                          see "Connection-level security")
-  --security-role-prefix restrictedsql   (static roles: <prefix>_ro, <prefix>_rw;
-                                          annotation mode adds a random process suffix)
-  --databases '^app_preview_pr_'        (regex; also serve the matching databases of the same server
-                                          next to the DSN's database; postgres static table mode only;
-                                          see "Multi-database mode")
-  --log-level info|debug
+For direct HTTP, replace `--transport=stdio` with `--transport=http`. The default
+listener is `127.0.0.1:8080`, with MCP at `/mcp`. Keep it on loopback unless you
+provide an appropriate authenticated boundary.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `/mcp` | Stateless Streamable HTTP MCP endpoint. |
+| `/healthz` | Process liveness. |
+| `/readyz` | Database connectivity, security setup, and metadata refresh. |
+
+`--health-listen=0.0.0.0:8081` exposes just the probes on a separate listener.
+Dropping an allowlisted table does not make the whole server unready; queries
+against that table fail. Surviving tables pick up column changes on metadata
+refresh.
+
+[All flags, startup behavior, and refresh rules →](docs/configuration.md)
+
+## How SQL is checked
+
+```text
+SQL → parse → validate policy → deparse canonical SQL → restricted database session
 ```
 
-Boot semantics:
+Postgres uses `pg_query_go`, based on the Postgres grammar. ClickHouse uses
+`clickhouse-sql-parser`. Both guards reject unsupported AST nodes and operations.
+Tables are fully qualified in the canonical SQL sent to the database.
 
-- Invalid flags exit 2 with a message: unknown dialect, no DSN, no read tables, an
-  unparsable table name, write tools on ClickHouse, write tools without
-  `--write-tables`, `--tunnel` without its environment, unknown transport,
-  `--databases` with an invalid regex, on ClickHouse, or with `--columns-from-annotations`,
-  `--health-listen` with stdio or equal to `--listen`, and a zero or negative
-  `--txn-max-lifetime`, `--pool-max-conns` or `--database-pool-max-conns`.
-  The pool flags override any `pool_max_conns` in the DSN.
-- `GET /healthz` reports liveness: 200 once the process serves, independently of
-  database availability or schema contents.
-- `GET /readyz` reports readiness: 200 when the database answers a ping, security
-  provisioning has succeeded (if enabled), and the column metadata refresh
-  succeeds. Otherwise it returns 503 with `{"ready":false,"reason":"..."}` and
-  retries on the next probe. Once security setup succeeds, missing, dropped or
-  renamed tables affect queries using those tables, not readiness of the whole
-  server. An unreachable database
-  or a provisioning failure remains unready without terminating the process.
-- Readiness refreshes column metadata, so surviving tables pick up added,
-  dropped and renamed columns. Wildcard expansion and provisioned grants remain
-  startup snapshots: restart to include new wildcard tables or grant access to
-  recreated tables. Renamed tables must also match the configured allowlist.
-  Explicitly configured tables that were absent during provisioning receive
-  their grants when a metadata refresh discovers them; passwords and open
-  transactions stay unchanged. Refresh runs on readiness probes for the default
-  database and on periodic/list-databases refresh for additional databases.
-  Schema changes do not automatically broaden the configured access policy.
-- Postgres tool queries describe their result on every execution rather than
-  caching prepared statement shapes. Repeating `SELECT *` after a column
-  migration therefore uses the current column names and types. This costs one
-  additional database round trip per tool query.
-- The readiness body carries `"tunnel":"disabled|connecting|connected|stopped"`,
-  which does not gate readiness. `--health-listen` exposes only the two fixed
-  probe endpoints on a separate listener; it never exposes `/mcp`.
-- Logs are JSON on stdout (stderr for the stdio transport, where stdout carries the
-  protocol). At `debug` they include raw and canonical SQL, referenced tables,
-  rejection reasons, timings, and transaction lifecycle events. The DSN is never
-  logged.
-- In annotation mode, readiness refreshes the catalog and verifies exact column
-  grants. A failed refresh closes tool admission, including existing MCP
-  sessions. Periodic refresh also runs without readiness probes. An empty set
-  of selectable columns is valid: metadata remains available, data is denied.
+Postgres read tools use read-only transactions with a pinned `search_path` and
+statement timeout. ClickHouse read tools use `readonly=1` and query limits.
 
-Example annotation deployment (the bootstrap DSN is supplied in `DATABASE_URL`):
+### Connection-level security
+
+`--connection-level-security` treats `DATABASE_URL` as a bootstrap connection and
+provisions database roles with the configured grants. Tool traffic then uses
+those roles. The SQL guard and database permissions enforce separate boundaries.
+
+Run one replica: startup rotates role passwords. Previously missing, explicitly
+configured Postgres tables receive grants when metadata refresh discovers them,
+without changing passwords or interrupting open transactions. New tables outside
+the configured policy are not admitted automatically.
+
+[Bootstrap permissions, grants, and limitations →](docs/configuration.md#connection-level-security)
+
+### Column access
+
+For read-only access based on column annotations:
 
 ```sh
-restrictedsql-mcp --dialect postgres \
-  --columns-from-annotations confidential --connection-level-security
+./bin/restrictedsql-mcp \
+  --dialect=postgres \
+  --transport=stdio \
+  --columns-from-annotations=confidential \
+  --connection-level-security
 ```
 
-The database owner defines the class names. The server reads only the classes
-listed and denies all others, so list only classes whose every column is fit to
-expose (for the Speakeasy Control Plane, `confidential`, adding `confidential-pii` when reviewed
-identity columns should be visible and `opaque-confidential` when support needs
-customer-chosen names such as tool or client names). Missing or malformed column
-comments deny access. Existing `--read-tables` deployments keep their
-current behavior.
+The database owner defines the access classes. Unannotated or malformed columns
+are denied. Annotation refresh coordinates catalog changes, grants, and active
+queries.
 
-## Connection-level security
+[Column policy and migration procedure →](docs/column-access.md)
 
-The details below describe **static table mode**. Annotation mode uses separate
-process-specific roles, exact column grants, effective-grant audits (including
-PostgreSQL `PUBLIC`), and coordinated refresh. Its bootstrap requirements and
-role lifecycle are documented in [column access](docs/column-access.md).
+### Multi-database mode
 
-`--connection-level-security` adds a second enforcement layer inside the database
-itself. The DSN becomes a **bootstrap** connection used only to provision roles;
-once that succeeds the bootstrap connection is closed and every tool call runs on
-pools that authenticate as the provisioned roles. Even if a statement slipped past
-the guard, the database would refuse anything outside the allowlist.
+`--databases='^app_preview_pr_[0-9]+$'` lets one Postgres server serve matching
+preview databases alongside the default database. Each database gets its own
+policy, pools, and provisioned roles. Additional databases open on demand and
+are removed when they disappear.
 
-What the bootstrap DSN needs:
-
-- Postgres: `CREATEROLE` (or superuser), and either ownership of the allowlisted
-  tables and their schemas or the matching privileges `WITH GRANT OPTION`
-  (`USAGE` on the schemas, `SELECT` on read tables, `SELECT/INSERT/UPDATE/DELETE`
-  on write tables, `USAGE/SELECT` on the write tables' sequences). The role also
-  needs `USAGE` on every schema it should be able to revoke from; schemas it
-  cannot use are skipped.
-- ClickHouse: `ACCESS MANAGEMENT` and the granted privileges `WITH GRANT OPTION`
-  (the `default` user with `access_management=1` has both).
-
-What gets created, on every boot and again on every `/readyz` probe until it
-succeeds (the whole Postgres sequence runs in one transaction). Each Postgres
-attempt intersects the configured allowlist with the current catalog, omitting
-deleted tables and their sequence grants. Present tables still require the
-bootstrap's grant permissions. Connecting MCP clients reuse these roles rather
-than provisioning per user. Missing configured table names are logged and
-retried during metadata refresh; permission errors on newly appearing tables
-remain errors and are retried until their bootstrap grants are repaired.
-
-The provisioned roles are:
-
-- Postgres `restrictedsql_ro` (`--security-role-prefix` changes the prefix):
-  `LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION`, role-level
-  `search_path = <default-schema>` and `statement_timeout = <flag>`; every table,
-  sequence and schema privilege the bootstrap can address is revoked; then
-  `USAGE` on the read tables' schemas and `SELECT` on the read tables.
-- Postgres `restrictedsql_rw`, only with `--dangerously-add-write-tools`: the
-  same hardening; `USAGE` on the schemas of read ∪ write, `SELECT` on read ∪
-  write, `INSERT/UPDATE/DELETE` on the write tables, and `USAGE/SELECT` on the
-  sequences the write tables depend on (serial, identity, and any sequence named
-  in a column default). The write pool is used only by `begin_transaction`.
-- ClickHouse `restrictedsql_ro`: `CREATE USER OR REPLACE ... IDENTIFIED WITH
-  sha256_password` with `readonly = 1` pinned (`READONLY`) and the per-query
-  limits the server sends (`max_execution_time`, `max_result_rows`,
-  `result_overflow_mode`) allowed only up to the policy's caps
-  (`CHANGEABLE_IN_READONLY`); `REVOKE ALL ON *.*`; `SELECT` on each read table;
-  `SHOW TABLES` and `SHOW COLUMNS` on the read tables' databases; `SELECT` on
-  `system.data_skipping_indices`. ClickHouse filters `system.databases`,
-  `system.tables` and `system.columns` to what the user may see, so
-  `list_schemas` and `list_objects` show only the databases that hold
-  allowlisted tables and the tables in them.
-
-Passwords are 32 random bytes generated per boot, held only in memory and never
-logged; on Postgres they are sent as a SCRAM-SHA-256 verifier when
-`password_encryption` is `scram-sha-256`, so the plaintext never appears in a
-statement. Every boot rotates them, and every boot re-applies the revoke/grant
-sequence, so a drifted grant is repaired and a stale password is replaced.
-Because of that rotation, run a **single replica**: a second process would
-rotate the first one's passwords out from under it. Role names must match
-`^[a-z_][a-z0-9_]{0,59}$`.
-
-Boot never fails because of provisioning. If it did not succeed, `/readyz`
-answers 503 with `connection-level security not provisioned: <error>` (the
-error names the statement that failed, with the password redacted) and every
-tool returns the same message; each probe and each tool call retries. The
-`info` log line `postgres roles provisioned` / `clickhouse user provisioned`
-lists the roles and the tables they were granted.
-
-Not covered: privileges granted to `PUBLIC` still apply to the provisioned
-roles, and an existing role with the same name keeps any role memberships it
-already had; grants that belong to other grantors cannot be revoked by the
-bootstrap role.
-
-## Multi-database mode
-
-`--databases <regex>` serves several databases of one Postgres server from one
-process, for example a main `app` database plus preview databases
-`app_preview_pr_<N>` that come and go:
-
-```sh
-restrictedsql-mcp --dialect postgres --dsn postgres://bootstrap:…@host:5432/app \
-  --read-tables 'app.*' --write-tables 'app.*' --dangerously-add-write-tools \
-  --connection-level-security --databases '^app_preview_pr_[0-9]+$'
-```
-
-- The DSN's database is always served and is the default. The DSN must be URL-form
-  and name its database. Further databases are those in `pg_database` that allow
-  connections, are not templates, that the bootstrap role may `CONNECT` to, and
-  whose name matches the regex (Go syntax, unanchored: use `^…$` for exact names).
-- The read and metadata tools and `begin_transaction` take an optional
-  `"database"` argument; omitted, they use the default database. `list_databases`
-  (registered only with `--databases`) re-reads the database list and returns
-  `{ "databases": [{ "name", "default", "open" }] }`. A name that is not served is
-  rejected with `unknown database "<name>"` (after one re-read of the list).
-- `execute_sql_write`, `commit_transaction` and `rollback_transaction` take no
-  database: a transaction stays in the database it was begun in, and its
-  statements are checked against that database's allowlist.
-  `--max-open-txns` is shared by all databases.
-- Each additional database is opened on first use: `--read-tables` /
-  `--write-tables` are resolved again against that database (so `<schema>.*`
-  expands to the tables it has when the database is opened; new tables need a
-  restart or a re-created database), and with `--connection-level-security` it gets
-  its own roles `<prefix>_<database>_ro` / `_rw` (roles are server-wide). Names that
-  are not plain lowercase identifiers, or that would exceed the 63-byte limit, are
-  sanitized, truncated and suffixed with a short hash. The default database keeps
-  `<prefix>_ro` / `<prefix>_rw`. The bootstrap role needs the same privileges in
-  every served database as in the default one. A failed open is reported to the
-  calling tool and retried by the next call.
-- When a served database disappears (a query or connection fails with
-  `3D000`, `57P0x`, a connection exception or a broken connection and
-  `pg_database` confirms it is gone, or it is missing when the list is re-read),
-  its open transactions are rolled back, its pools closed and its roles dropped
-  from the default database (logged as `roles of evicted database dropped`).
-  Later calls get `unknown database`. A terminated connection to a database that
-  still exists is not an eviction; the next call reconnects.
-- `/readyz` checks the default database only. The column snapshots of the other
-  open databases are reloaded every 30s and on each `list_databases` call.
-- Logs of tool calls carry a `database` field.
-- Not supported with ClickHouse or `--columns-from-annotations`. Pools are opened
-  per database and kept until the database disappears or the process exits.
+[Database routing and lifecycle →](docs/configuration.md#multi-database-mode)
 
 ## Tools
 
-The HTTP transport is stateless (MCP 2026-07-28): no `Mcp-Session-Id`, nothing
-kept per client between requests; see [docs/connection-model.md](docs/connection-model.md).
-All tools take and return JSON. Errors come back as MCP tool errors
-(`isError: true`) with a stable message; rejections name the reason and the
-offending node, table, function, or type so the agent can self-correct.
+| Tool | Use |
+| --- | --- |
+| `execute_sql_readonly` | Run a validated read query with bounded results. |
+| `list_schemas`, `list_objects`, `get_object_details` | Inspect database structure. |
+| `explain_query` | Inspect a query plan; Postgres also supports hypothetical indexes. |
+| `list_databases` | Discover served databases when multi-database mode is enabled. |
+| `begin_transaction`, `execute_sql_write` | Run opt-in Postgres writes within a transaction. |
+| `commit_transaction`, `rollback_transaction` | Explicitly finish a write transaction. |
 
-### Read tools (always registered)
+### Writes stay explicit
 
-With `--databases`, every read tool below also takes `"database"?: string`
-(see "Multi-database mode").
+Enable writes with both `--write-tables=public.audit` and
+`--dangerously-add-write-tools`. The workflow is:
 
-**`execute_sql_readonly`** — `{ "sql": string, "max_rows"?: int }`
-Runs one SELECT-like statement against read-allowlisted tables. Returns
-`{ "columns": [{name,type}], "rows": [[...]], "row_count", "truncated", "duration_ms" }`.
-`max_rows` is capped at `--max-rows`; truncation is detected by fetching one row
-past the cap.
-
-**`list_schemas`** — `{}`
-Lists every schema (Postgres) or database (ClickHouse) visible to the connection.
-Catalog visibility is deliberately unrestricted; only execution is restricted.
-Returns `{ "schemas": [{ "name", "owner"?, "description"? }] }`.
-
-**`list_objects`** — `{ "schema": string, "object_type"?: "table"|"view"|"sequence"|"extension" }`
-Returns `{ "objects": [{ "name", "type", "row_estimate"?, "size_bytes"?, "engine"? }] }`.
-On ClickHouse, `sequence` and `extension` are empty.
-
-**`get_object_details`** — `{ "schema": string, "name": string }`
-Returns columns (name, type, nullable, default, description), constraints,
-indexes, size, row estimate, description, and on ClickHouse the engine, sorting
-key, and partition key.
-
-In annotation mode, metadata comes from the catalog snapshot. Objects include
-`access` with queryability, selectable columns and generation; columns include
-tier, annotation status, selectability and denial reason. Discovery includes
-closed application tables. Raw comments, defaults, index expressions and engine
-connection definitions are omitted; PostgreSQL foreign-key relationships remain
-available as structured column references.
-
-**`explain_query`** — `{ "sql": string, "analyze"?: bool, "hypothetical_indexes"?: [{ "schema"?, "table", "columns": [string], "method"?: "btree"|"hash"|"gin"|"gist"|"brin" }] }`
-The SQL goes through the same read-mode guard. Postgres runs
-`EXPLAIN (FORMAT JSON, VERBOSE, COSTS[, ANALYZE, BUFFERS])` in a read-only
-transaction; hypothetical indexes use the `hypopg` extension and the server builds
-the `CREATE INDEX` text itself from the structured input (the table must be
-read-allowlisted, columns must be plain identifiers). `analyze` and hypothetical
-indexes are mutually exclusive. ClickHouse runs `EXPLAIN PLAN indexes=1` (or
-`EXPLAIN PIPELINE` with `analyze`) and rejects hypothetical indexes. Returns
-`{ "dialect", "plan": <json or text>, "notes"?: string }`.
-
-### Database tool (Postgres only, registered only with `--databases`)
-
-**`list_databases`** — `{}`
-The database-level counterpart of `list_schemas`: lists the databases this server
-serves, re-reading the database list on each call so new and dropped databases
-show up. Returns `{ "databases": [{ "name", "default", "open" }] }`; `default`
-marks the DSN's database (used when `"database"` is omitted), `open` whether the server has opened it (provisioned roles, created pools);
-connections are made on demand and closed after a minute unused. Pass a
-`name` as the `"database"` argument of the read tools, the metadata tools and
-`begin_transaction`. Only served databases are listed: other databases on the
-instance are not, and SQL cannot enumerate them because `pg_database` is not
-read-allowlisted. See "Multi-database mode".
-
-### Write tools (Postgres only, need `--dangerously-add-write-tools`)
-
-Writes are only possible inside an explicit transaction so the agent can inspect
-the effect before committing.
-
-**`begin_transaction`** — `{}` → `{ "transaction_id", "expires_at", "ends_at" }`
-Pins a dedicated connection. Fails once `--max-open-txns` is reached.
-`expires_at` is when it is rolled back if left idle (each call pushes it back);
-`ends_at` is when it is rolled back however busy (`--txn-max-lifetime`). With
-`--databases` it takes `"database"?: string` and also returns `"database"`.
-
-**`execute_sql_write`** — `{ "transaction_id", "sql", "max_rows"? }`
-Accepts INSERT / UPDATE / DELETE (RETURNING allowed) whose target is
-write-allowlisted, and SELECT over read ∪ write tables. Source tables of
-INSERT…SELECT, UPDATE…FROM, DELETE…USING, and subqueries must be in read ∪ write.
-Returns `{ "rows_affected", "columns", "rows", "row_count", "truncated", "duration_ms" }`.
-An error leaves the transaction aborted, as Postgres does; roll it back.
-
-**`commit_transaction`** / **`rollback_transaction`** — `{ "transaction_id" }` → `{ "status" }`
-Release the connection. Unknown or expired ids return an error.
-
-Transactions idle longer than `--txn-idle-timeout`, or older than
-`--txn-max-lifetime`, are rolled back by a reaper and their id is invalidated.
-Postgres's `idle_in_transaction_session_timeout` (idle timeout plus 30s) is set on
-each transaction as a backstop. Transactions are process-local, so run one replica.
-See [docs/connection-model.md](docs/connection-model.md).
-
-### Transaction workflow example
-
-```
-begin_transaction        {}                                   → {"transaction_id":"…","expires_at":"…","ends_at":"…"}
-execute_sql_write        {"transaction_id":"…","sql":"INSERT INTO allowed_audit (note) VALUES ('checked') RETURNING id"}
-                                                              → {"rows_affected":1,"rows":[[7]],…}
-execute_sql_write        {"transaction_id":"…","sql":"SELECT count(*) FROM allowed_audit"}
-                                                              → {"rows":[[1]],…}
-commit_transaction       {"transaction_id":"…"}               → {"status":"committed"}
+```text
+begin_transaction → execute_sql_write → inspect results → commit_transaction
+                                                     ↘ rollback_transaction
 ```
 
-## ClickHouse limitations
+Transactions expire after configured idle and lifetime limits. DDL remains
+rejected. Read-only deployments do not register the write tools.
 
-- No write tools; `--dangerously-add-write-tools` is a boot error.
-- No hypothetical indexes in `explain_query`.
-- `SETTINGS`, `FORMAT`, `INTO OUTFILE`, `SAMPLE`, table functions (`numbers`,
-  `url`, `file`, `s3`, `remote`, `merge`, …) and `system.*` tables are rejected
-  unless a `system` table is explicitly allowlisted.
-
-## Development
-
-Requirements: Go 1.27, a C compiler (cgo for `pg_query_go`), Docker with Compose.
-
-```
-make build      # bin/restrictedsql-mcp
-make vet        # gofmt + go vet
-make test       # policy, admission, and SQL-binding tests
-make e2e-up     # start the shared Postgres (with hypopg) and ClickHouse stack
-make e2e        # e2e-up, then E2E=1 go test ./e2e/...
-make e2e-pg     # only Postgres and common suites
-make e2e-ch     # only ClickHouse and common suites
-make e2e-annotations # column access, grants, reload, and migration suites
-```
-
-Unit tests cover annotation parsing, binding, canonicalization, expansion limits,
-and admission invalidation under refresh failures. Run them with the race
-detector using `go test -race ./internal/... ./cmd/...`.
-
-The e2e suite builds the real binary once, boots it as a
-subprocess per test with the flags under test, waits for `/readyz`, and drives it
-with the go-sdk MCP client over Streamable HTTP. Subprocess logs (debug level) are
-printed on failure. Without `E2E=1` the package exits immediately so
-`go test ./...` stays fast.
-
-Annotation fixtures contain synthetic safe, PII, content, secret, restricted and
-unannotated values. Tests cover both HTTP and stdio, hidden inputs in SQL clauses,
-direct restricted credentials, schema changes, canceled in-flight results,
-unsupported dependencies, and the existing SQL bypass corpus.
-
-The compose stack binds Postgres to `127.0.0.1:55433` (55432 is often taken by
-other local databases) and ClickHouse to `127.0.0.1:59000` (native) and
-`127.0.0.1:58123` (HTTP). Override with `E2E_PG_PORT`, `E2E_CH_NATIVE_PORT`,
-`E2E_CH_HTTP_PORT`, or point the tests at other databases with `E2E_PG_DSN` and
-`E2E_CH_DSN`. The stack is shared between parallel work streams; `make e2e-down`
-tears it down and should be run deliberately.
-
-`E2E_CH_VERSION` selects the Compose ClickHouse image (default `25.8`). Column
-access is also tested against the Speakeasy Control Plane's pinned `26.2.19.43`; use a separate Compose
-project and ports when running that version beside the shared stack.
-
-## Releases
-
-Versions follow semver and are cut with [changesets](https://github.com/changesets/changesets):
-add one to every PR that changes the server (`npx changeset`, then pick patch, minor
-or major); the Changeset check fails a PR that changes Go code, modules or the
-Dockerfile without one (label `no-changeset` to skip). On main the Release workflow keeps a "chore: version packages" PR open
-with the version bump and `CHANGELOG.md`; merging it tags `vX.Y.Z`, creates the GitHub
-release and publishes `ghcr.io/speakeasy-api/restricted-sql-mcp:X.Y.Z` (plus `:X.Y`
-and `:latest`), signed with cosign. Every commit on main is also published as
-`:sha-<commit>`. Deploy by digest.
+[Tool inputs, outputs, examples, and dialect limits →](docs/tools.md)
 
 ## Deployment
 
-`deploy/Dockerfile` builds with `golang:1.27-bookworm` (gcc for cgo) and ships a
-`debian:bookworm-slim` image running as a non-root user with
-`ENTRYPOINT ["/restrictedsql-mcp"]`:
+Build the release image locally:
 
-```
-docker build -f deploy/Dockerfile --build-arg VERSION=v0.1.0 -t restrictedsql-mcp:v0.1.0 .
-docker run --rm restrictedsql-mcp:v0.1.0 --help
+```sh
+docker build --build-arg VERSION=dev -t restrictedsql-mcp:dev .
+docker run --rm restrictedsql-mcp:dev --help
 ```
 
-`deploy/k8s.yaml` is a single-replica Deployment with the liveness probe on
-`/healthz`, readiness and startup probes on `/readyz`, `DATABASE_URL` and
-`TUNNEL_*` from a Secret, and no Service or Ingress. `/mcp` listens on loopback,
-where only the in-process tunnel agent reaches it. Kubelet probes the pod IP,
-not loopback, so `--health-listen 0.0.0.0:8081` serves `/healthz` and `/readyz`
-alone on a second port; `/mcp` there is a 404.
+Release images are published to
+[`ghcr.io/speakeasy-api/restricted-sql-mcp`](https://github.com/speakeasy-api/restricted-sql-mcp/pkgs/container/restricted-sql-mcp).
+Pin a digest for deployments. The image runs as a non-root user and includes
+project and third-party license notices.
 
-Set `TUNNEL_GATEWAY_URL` and `TUNNEL_KEY` and pass `--tunnel` to expose the server
-through the Speakeasy Control Plane. The agent dials out and proxies to `http://<listen>/mcp`; the
-readiness body reports the tunnel state without gating on it.
+[Container builds, Kubernetes, and tunnel-only deployments →](docs/deployment.md)
 
-### Tunnel-only mode
+## Development
 
-A loopback bind is not isolation: any process on the host (or any container in
-the same pod) can reach `/mcp`. `--tunnel-only` closes that path. At boot the
-server generates a 256-bit token that never leaves process memory, pins it on the
-local URL the in-process tunnel agent proxies to (the agent merges that query
-into every request it forwards), and refuses any `/mcp` request without it with
-`401`. The token is stripped before the MCP handler sees the request, is not
-logged, and cannot be obtained through the tunnel. `/healthz` and `/readyz`
-stay open for probes; use `--health-listen` to probe from outside the pod
-without exposing `/mcp`. `--transport stdio` needs none of this: only the parent
-process holds the pipe.
+```sh
+go test -race ./internal/... ./cmd/...
+go vet ./...
+```
+
+The integration suite runs the real binary against synthetic Postgres and
+ClickHouse fixtures through an MCP client. Docker Compose is needed for these
+suites; see the fixture ports before starting another stack.
+
+[Contributing](CONTRIBUTING.md) · [Integration suites and local setup](docs/development.md)
+
+## Releases
+
+Versions use Changesets. Server, dependency, and container changes need a
+changeset; the release workflow creates the version PR and signed multi-platform
+images.
+
+[Latest releases](https://github.com/speakeasy-api/restricted-sql-mcp/releases) · [Release process](docs/development.md#releases)
+
+## Security
+
+Report vulnerabilities privately to **security@speakeasy.com**. Include a version
+and a reproduction against a synthetic database. Keep credentials, real query
+results, and SQL guard bypasses out of public issues.
+
+[Security reporting policy →](SECURITY.md)
+
+## License
+
+Copyright 2026 Speakeasy. Licensed under the
+[GNU Affero General Public License, version 3](LICENSE) (`AGPL-3.0-only`), matching
+the embedded Gram tunnel agent's license version. Third-party dependencies
+retain their own licenses and attribution in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).

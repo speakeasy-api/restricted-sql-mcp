@@ -56,6 +56,7 @@ jobs:
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
           labels: |
             org.opencontainers.image.source=https://github.com/speakeasy-api/restricted-sql-mcp
+            org.opencontainers.image.licenses=AGPL-3.0-only
             org.opencontainers.image.description=restricted-sql-mcp: an MCP server giving agents allowlisted SQL over Postgres and ClickHouse
             org.opencontainers.image.version=${{ inputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}

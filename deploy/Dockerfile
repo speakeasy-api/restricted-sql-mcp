@@ -16,6 +16,9 @@ FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+LABEL org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.source="https://github.com/speakeasy-api/restricted-sql-mcp"
 COPY --from=build /out/restrictedsql-mcp /restrictedsql-mcp
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES /licenses/restricted-sql-mcp/
 USER 65532:65532
 ENTRYPOINT ["/restrictedsql-mcp"]
