@@ -82,7 +82,7 @@ func TestReplicaMCPAuthorizesOnlyConfiguredCaller(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(jwks)))}, nil
 	}))
 	var callers []config.ReplicaPrincipal
-	if err := json.Unmarshal([]byte(`[{"gramUserID":"included","databaseLogin":"included_reader"}]`), &callers); err != nil {
+	if err := json.Unmarshal([]byte(`[{"email":"engineer@example.com","databaseLogin":"included_reader"}]`), &callers); err != nil {
 		t.Fatal(err)
 	}
 	srv := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1"}, nil)
@@ -91,16 +91,19 @@ func TestReplicaMCPAuthorizesOnlyConfiguredCaller(t *testing.T) {
 		func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: callers[0].DatabaseLogin}}}, nil
 		})
-	selectServer, authenticate := replicaCallerRouting(verifier.Verify, map[string]*mcp.Server{callers[0].Subject(): srv})
+	selectServer, authenticate := replicaCallerRouting(verifier.Verify, map[string]*mcp.Server{callers[0].RoutingKey(): srv})
 	handler := authenticate(mcp.NewStreamableHTTPHandler(selectServer, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true}))
 	for _, tc := range []struct {
 		name, issuer, subject, email string
 		want                         int
 	}{
 		{"configured user", issuer, "user:included", "engineer@example.com", http.StatusOK},
-		{"same user after email change", issuer, "user:included", "renamed@example.com", http.StatusOK},
-		{"unconfigured user with same email", issuer, "user:excluded", "engineer@example.com", http.StatusForbidden},
+		{"same listed email and different user ID", issuer, "user:another", "Engineer@EXAMPLE.com", http.StatusOK},
+		{"unlisted email in the same domain", issuer, "user:included", "unlisted@example.com", http.StatusForbidden},
+		{"missing email", issuer, "user:included", "", http.StatusForbidden},
 		{"api key", issuer, "api_key:included", "engineer@example.com", http.StatusForbidden},
+		{"agent", issuer, "agent:included", "engineer@example.com", http.StatusForbidden},
+		{"empty user ID", issuer, "user:", "engineer@example.com", http.StatusForbidden},
 		{"production assertion", "https://tunnel.speakeasy.com", "user:included", "engineer@example.com", http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,7 +71,7 @@ func runReplica(ctx context.Context, stop context.CancelFunc, cfg *config.Config
 		if err != nil {
 			return err
 		}
-		callerLogger := logger.With("subject", principal.Subject(), "database_login", principal.DatabaseLogin)
+		callerLogger := logger.With("database_login", principal.DatabaseLogin)
 		source := &dbsec.ReplicaAnnotations{ReadDSN: dsn, Role: principal.DatabaseLogin, Probe: probe}
 		build := func(ctx context.Context, creds dbsec.Creds, p *policy.Policy) (db.Backend, error) {
 			return pgbackend.New(ctx, creds.ReadDSN, p, callerLogger, pgbackend.WithMaxConns(1),
@@ -85,7 +86,7 @@ func runReplica(ctx context.Context, stop context.CancelFunc, cfg *config.Config
 			DisableExplain: true,
 		})
 		server.AddReceivingMiddleware(authorizeTunnelMethods(callerLogger))
-		servers[principal.Subject()] = server
+		servers[principal.RoutingKey()] = server
 	}
 	go refreshReplica(ctx, cfg, pol, probe, refreshers, logger)
 	ready := func(context.Context) error {
@@ -129,10 +130,22 @@ func refreshReplica(ctx context.Context, cfg *config.Config, pol *policy.Policy,
 }
 
 func replicaCallerRouting(verify func(*http.Request) (*tunnelidentity.Claims, error), servers map[string]*mcp.Server) (func(*http.Request) *mcp.Server, func(http.Handler) http.Handler) {
+	findServer := func(claims *tunnelidentity.Claims) *mcp.Server {
+		if claims == nil || !strings.HasPrefix(claims.Subject, "user:") || claims.Subject == "user:" {
+			return nil
+		}
+		if server := servers[claims.Subject]; server != nil {
+			return server
+		}
+		if email := config.NormalizeReplicaEmail(claims.Email); email != "" {
+			return servers["email:"+email]
+		}
+		return nil
+	}
 	authenticate := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			claims, err := verify(r)
-			if err != nil || servers[claims.Subject] == nil {
+			if err != nil || findServer(claims) == nil {
 				http.Error(w, "configured caller identity required", http.StatusForbidden)
 				return
 			}
@@ -141,10 +154,7 @@ func replicaCallerRouting(verify func(*http.Request) (*tunnelidentity.Claims, er
 	}
 	selectServer := func(r *http.Request) *mcp.Server {
 		claims, _ := r.Context().Value(identityContextKey{}).(*tunnelidentity.Claims)
-		if claims == nil {
-			return nil
-		}
-		return servers[claims.Subject]
+		return findServer(claims)
 	}
 	return selectServer, authenticate
 }
@@ -159,7 +169,7 @@ func authorizeTunnelMethods(logger *slog.Logger) mcp.Middleware {
 			result, err := next(ctx, method, req)
 			if method == "tools/call" {
 				tool, _ := result.(*mcp.CallToolResult)
-				logger.InfoContext(ctx, "restricted SQL tool call", "method", method, "assertion_id", claims.ID,
+				logger.InfoContext(ctx, "restricted SQL tool call", "method", method, "subject", claims.Subject, "assertion_id", claims.ID,
 					"ok", err == nil && tool != nil && !tool.IsError)
 			}
 			return result, err

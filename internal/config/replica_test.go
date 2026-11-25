@@ -52,7 +52,7 @@ func TestReplicaModesUseConfiguredRoster(t *testing.T) {
 			t.Fatal("reconciliation and serving parsed different callers")
 		}
 	}
-	if got := serve.ReplicaPrincipals[0].Subject(); got != "user:caller.0" {
+	if got := serve.ReplicaPrincipals[0].RoutingKey(); got != "user:caller.0" {
 		t.Fatalf("subject = %q", got)
 	}
 
@@ -61,6 +61,11 @@ func TestReplicaModesUseConfiguredRoster(t *testing.T) {
 		t.Fatal("accepted a padded zero replay floor")
 	}
 	env["RESTRICTED_SQL_REPLAY_LSN"] = "0/A"
+
+	env["RESTRICTED_SQL_ROSTER"] = `[{"email":"one@example.com","databaseLogin":"reader_1"},{"email":"ONE@EXAMPLE.COM","databaseLogin":"reader_2"}]`
+	if _, err := parse("serve", "--tunnel", "--tunnel-only"); err == nil {
+		t.Fatal("accepted duplicate email addresses with different casing")
+	}
 
 	env["RESTRICTED_SQL_ROSTER"] = `[{"gramUserID":"alice","databaseLogin":"reader"},{"gramUserID":"bob","databaseLogin":"reader"}]`
 	if _, err := parse("serve", "--tunnel", "--tunnel-only"); err == nil {
