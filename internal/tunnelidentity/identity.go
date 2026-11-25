@@ -24,6 +24,7 @@ type Claims struct {
 	jwt.RegisteredClaims
 	Version        int             `json:"version"`
 	Organization   string          `json:"organization_id"`
+	Email          string          `json:"email"`
 	AllowedMethods json.RawMessage `json:"allowed_methods"`
 }
 

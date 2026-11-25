@@ -82,26 +82,41 @@ func TestReplicaMCPAuthorizesOnlyConfiguredCaller(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(jwks)))}, nil
 	}))
 	var callers []config.ReplicaPrincipal
-	if err := json.Unmarshal([]byte(`[{"gramUserID":"included","databaseLogin":"included_reader"}]`), &callers); err != nil {
+	if err := json.Unmarshal([]byte(`[
+		{"email":"engineer@example.com","databaseLogin":"included_reader"},
+		{"gramUserID":"legacy","email":"legacy@example.com","databaseLogin":"legacy_reader"}
+	]`), &callers); err != nil {
 		t.Fatal(err)
 	}
-	srv := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1"}, nil)
-	srv.AddReceivingMiddleware(authorizeTunnelMethods(slog.New(slog.DiscardHandler)))
-	srv.AddTool(&mcp.Tool{Name: "sql", InputSchema: map[string]any{"type": "object"}},
-		func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: callers[0].DatabaseLogin}}}, nil
-		})
-	selectServer, authenticate := replicaCallerRouting(verifier.Verify, map[string]*mcp.Server{callers[0].Subject(): srv})
+	servers := make(map[string]*mcp.Server, len(callers))
+	for _, caller := range callers {
+		srv := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1"}, nil)
+		srv.AddReceivingMiddleware(authorizeTunnelMethods(slog.New(slog.DiscardHandler)))
+		srv.AddTool(&mcp.Tool{Name: "sql", InputSchema: map[string]any{"type": "object"}},
+			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: caller.DatabaseLogin}}}, nil
+			})
+		servers[caller.RoutingKey()] = srv
+	}
+	selectServer, authenticate := replicaCallerRouting(verifier.Verify, servers)
 	handler := authenticate(mcp.NewStreamableHTTPHandler(selectServer, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true}))
 	for _, tc := range []struct {
 		name, issuer, subject, email string
 		want                         int
+		login                        string
 	}{
-		{"configured user", issuer, "user:included", "engineer@example.com", http.StatusOK},
-		{"same user after email change", issuer, "user:included", "renamed@example.com", http.StatusOK},
-		{"unconfigured user with same email", issuer, "user:excluded", "engineer@example.com", http.StatusForbidden},
-		{"api key", issuer, "api_key:included", "engineer@example.com", http.StatusForbidden},
-		{"production assertion", "https://tunnel.speakeasy.com", "user:included", "engineer@example.com", http.StatusForbidden},
+		{"configured user", issuer, "user:included", "engineer@example.com", http.StatusOK, "included_reader"},
+		{"same listed email and different user ID", issuer, "user:another", "Engineer@EXAMPLE.com", http.StatusOK, "included_reader"},
+		{"unlisted email in the same domain", issuer, "user:included", "unlisted@example.com", http.StatusForbidden, ""},
+		{"missing email", issuer, "user:included", "", http.StatusForbidden, ""},
+		{"api key", issuer, "api_key:included", "engineer@example.com", http.StatusForbidden, ""},
+		{"agent", issuer, "agent:included", "engineer@example.com", http.StatusForbidden, ""},
+		{"empty user ID", issuer, "user:", "engineer@example.com", http.StatusForbidden, ""},
+		{"production assertion", "https://tunnel.speakeasy.com", "user:included", "engineer@example.com", http.StatusForbidden, ""},
+		{"legacy ID with no email", issuer, "user:legacy", "", http.StatusOK, "legacy_reader"},
+		{"legacy ID with changed email", issuer, "user:legacy", "new-address@example.com", http.StatusOK, "legacy_reader"},
+		{"legacy row's informational email", issuer, "user:other", "legacy@example.com", http.StatusForbidden, ""},
+		{"conflicting ID and email entries", issuer, "user:legacy", "engineer@example.com", http.StatusForbidden, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			now := time.Now()
@@ -121,7 +136,7 @@ func TestReplicaMCPAuthorizesOnlyConfiguredCaller(t *testing.T) {
 			req.Header.Set("Accept", "application/json, text/event-stream")
 			res := httptest.NewRecorder()
 			handler.ServeHTTP(res, req)
-			if res.Code != tc.want || strings.Contains(res.Body.String(), "included_reader") != (tc.want == http.StatusOK) {
+			if res.Code != tc.want || (tc.login != "" && !strings.Contains(res.Body.String(), tc.login)) {
 				t.Fatalf("status = %d, body = %s; want %d", res.Code, res.Body.String(), tc.want)
 			}
 		})

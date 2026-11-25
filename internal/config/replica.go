@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"net"
+	"net/mail"
 	"net/url"
 	"regexp"
 	"strings"
@@ -13,12 +14,30 @@ import (
 )
 
 type ReplicaPrincipal struct {
-	GramUserID    string `json:"gramUserID"`
+	GramUserID    string `json:"gramUserID,omitempty"`
+	Email         string `json:"email,omitempty"`
 	DatabaseLogin string `json:"databaseLogin"`
 }
 
-func (p ReplicaPrincipal) Subject() string {
-	return "user:" + p.GramUserID
+func (p ReplicaPrincipal) RoutingKey() string {
+	if p.GramUserID != "" {
+		return "user:" + p.GramUserID
+	}
+	return "email:" + NormalizeReplicaEmail(p.Email)
+}
+
+func NormalizeReplicaEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
+func (p ReplicaPrincipal) validIdentity() bool {
+	if p.GramUserID != "" {
+		return strings.IndexFunc(p.GramUserID, unicode.IsSpace) < 0 &&
+			strings.IndexFunc(p.GramUserID, unicode.IsControl) < 0
+	}
+	email := NormalizeReplicaEmail(p.Email)
+	address, err := mail.ParseAddress(email)
+	return err == nil && address.Address == email
 }
 
 var replayLSN = regexp.MustCompile(`^[0-9A-Fa-f]{1,8}/[0-9A-Fa-f]{1,8}$`)
@@ -37,12 +56,12 @@ func (c *Config) validateReplica() error {
 	}
 	users, logins := map[string]bool{}, map[string]bool{}
 	for _, principal := range c.ReplicaPrincipals {
-		if principal.GramUserID == "" || strings.IndexFunc(principal.GramUserID, unicode.IsSpace) >= 0 ||
-			strings.IndexFunc(principal.GramUserID, unicode.IsControl) >= 0 ||
-			!validReplicaLogin(principal.DatabaseLogin) || users[principal.GramUserID] || logins[principal.DatabaseLogin] {
-			return errors.New("replica roster requires a unique Gram user ID and database login per caller")
+		key := principal.RoutingKey()
+		if !principal.validIdentity() || !validReplicaLogin(principal.DatabaseLogin) ||
+			users[key] || logins[principal.DatabaseLogin] {
+			return errors.New("replica roster requires a unique caller email or Gram user ID and database login per entry")
 		}
-		users[principal.GramUserID], logins[principal.DatabaseLogin] = true, true
+		users[key], logins[principal.DatabaseLogin] = true, true
 	}
 
 	u, err := url.Parse(c.DSN)
