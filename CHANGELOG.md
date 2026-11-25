@@ -1,5 +1,11 @@
 # restricted-sql-mcp
 
+## 0.3.0
+
+### Minor Changes
+
+- 24684a0: Add a PostgreSQL replica access mode for reconciling annotated column grants on a primary and serving read-only queries on a physical replica. The server verifies signed Speakeasy tunnel identity per request and uses a configured database login for each approved caller.
+
 ## 0.2.5
 
 ### Patch Changes
