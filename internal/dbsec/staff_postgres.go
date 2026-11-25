@@ -51,15 +51,11 @@ func ReconcileStaffGrants(ctx context.Context, dsn string, roles []string, base 
 		if err := verifyStaffRole(ctx, tx, role); err != nil {
 			return "", err
 		}
-		stmts, err := staffColumnRevokes(ctx, tx, role)
+		// PostgreSQL also revokes the matching column ACLs on a table REVOKE.
+		stmts, err := heldPrivilegeRevokes(ctx, tx, role)
 		if err != nil {
 			return "", err
 		}
-		relationRevokes, err := heldPrivilegeRevokes(ctx, tx, role)
-		if err != nil {
-			return "", err
-		}
-		stmts = append(stmts, relationRevokes...)
 		ident := pgx.Identifier{role}.Sanitize()
 		schemas := map[string]bool{}
 		for _, ref := range pol.AllTables() {
@@ -202,32 +198,6 @@ SELECT pg_catalog.has_database_privilege($1, current_database(), 'CREATE')
 		return fmt.Errorf("staff role %q has database CREATE, table MAINTAIN or sequence access", role)
 	}
 	return nil
-}
-
-func staffColumnRevokes(ctx context.Context, tx pgx.Tx, role string) ([]statement, error) {
-	rows, err := tx.Query(ctx, `
-SELECT n.nspname, c.relname, a.attname
-FROM pg_catalog.pg_class c
-JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
-JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped
-WHERE EXISTS (SELECT 1 FROM pg_catalog.aclexplode(a.attacl) acl
- WHERE acl.grantee=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname=$1))
-ORDER BY n.nspname,c.relname,a.attnum`, role)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	ident := pgx.Identifier{role}.Sanitize()
-	var out []statement
-	for rows.Next() {
-		var schema, table, column string
-		if err := rows.Scan(&schema, &table, &column); err != nil {
-			return nil, err
-		}
-		out = append(out, plain("REVOKE ALL ("+pgx.Identifier{column}.Sanitize()+") ON "+
-			pgx.Identifier{schema, table}.Sanitize()+" FROM "+ident))
-	}
-	return out, rows.Err()
 }
 
 func verifyStaffGrants(ctx context.Context, tx pgx.Tx, role string, pol *policy.Policy) error {
