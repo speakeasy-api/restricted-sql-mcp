@@ -1,0 +1,121 @@
+package dbsec
+
+import (
+	"context"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/speakeasy-api/restricted-sql-mcp/internal/policy"
+)
+
+// Run against an isolated primary and its streaming standby. The primary
+// must accept the test admin DSN. Never point this test at a shared database.
+func TestStaffPrimaryAndReplica(t *testing.T) {
+	primary, replica := os.Getenv("STAFF_TEST_PRIMARY"), os.Getenv("STAFF_TEST_REPLICA")
+	if primary == "" || replica == "" {
+		t.Skip("requires isolated STAFF_TEST_PRIMARY and STAFF_TEST_REPLICA")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	admin, err := pgx.Connect(ctx, primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closePG(admin)
+
+	_, err = admin.Exec(ctx, `
+CREATE ROLE "pilot+restricted-sql@speakeasy.com" LOGIN PASSWORD 'pilot-password';
+CREATE ROLE restricted_sql_staff_verify LOGIN PASSWORD 'verify-password';
+CREATE ROLE restricted_sql_staff_grants LOGIN PASSWORD 'grant-password';
+CREATE SCHEMA staff_test;
+CREATE TABLE staff_test.records (allowed text, hidden text);
+INSERT INTO staff_test.records VALUES ('a', 'b');
+COMMENT ON COLUMN staff_test.records.allowed IS '@access: confidential';
+GRANT USAGE ON SCHEMA staff_test TO restricted_sql_staff_grants WITH GRANT OPTION;
+GRANT SELECT ON staff_test.records TO restricted_sql_staff_grants WITH GRANT OPTION;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const role = "pilot+restricted-sql@speakeasy.com"
+	grantsDSN, _ := RewriteDSN(primary, "restricted_sql_staff_grants", "grant-password")
+	readDSN, _ := RewriteDSN(replica, role, "pilot-password")
+	verifyDSN, _ := RewriteDSN(replica, "restricted_sql_staff_verify", "verify-password")
+	pol := &policy.Policy{Dialect: policy.Postgres, AnnotationTiers: map[policy.Tier]bool{"confidential": true}}
+	reconcile := func() string {
+		t.Helper()
+		lsn, err := ReconcileStaffGrants(ctx, grantsDSN, []string{role}, pol)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return lsn
+	}
+	reconcile()
+	lsn := reconcile()
+	source := ReplicaAnnotations{
+		ReadDSN: readDSN, Role: role, ExpectedLSN: lsn,
+		VerifierDSN: verifyDSN, VerifierRole: "restricted_sql_staff_verify",
+	}
+	awaitCatalog := func(source ReplicaAnnotations) *policy.Catalog {
+		t.Helper()
+		for ctx.Err() == nil {
+			catalog, err := source.Load(ctx)
+			if err == nil {
+				return catalog
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatal("standby did not reach the replay floor")
+		return nil
+	}
+	catalog := awaitCatalog(source)
+	if err := source.Verify(ctx, pol.WithCatalog(catalog)); err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := pgx.Connect(ctx, readDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closePG(reader)
+	if err := source.CheckReplica(ctx, reader); err != nil {
+		t.Fatal(err)
+	}
+	var value string
+	if err := reader.QueryRow(ctx, "SELECT allowed FROM staff_test.records").Scan(&value); err != nil || value != "a" {
+		t.Fatalf("permitted column result: %q, %v", value, err)
+	}
+	if err := reader.QueryRow(ctx, "SELECT hidden FROM staff_test.records").Scan(&value); err == nil {
+		t.Fatal("unclassified column was readable")
+	}
+
+	wrongEndpoint := source
+	wrongEndpoint.VerifierDSN, _ = RewriteDSN(primary, source.VerifierRole, "verify-password")
+	if _, err := wrongEndpoint.Load(ctx); err == nil {
+		t.Fatal("serving verifier accepted the primary")
+	}
+	wrongEndpoint = source
+	wrongEndpoint.ExpectedLSN = "FFFFFFFF/FFFFFFFF"
+	if _, err := wrongEndpoint.Load(ctx); err == nil {
+		t.Fatal("serving verifier accepted stale WAL replay")
+	}
+	standbyGrants, _ := RewriteDSN(replica, "restricted_sql_staff_grants", "grant-password")
+	if _, err := ReconcileStaffGrants(ctx, standbyGrants, []string{role}, pol); err == nil || !strings.Contains(err.Error(), "requires the primary") {
+		t.Fatalf("reconciliation on standby returned %v", err)
+	}
+
+	if _, err := admin.Exec(ctx, "COMMENT ON COLUMN staff_test.records.allowed IS '@access: restricted'"); err != nil {
+		t.Fatal(err)
+	}
+	source.ExpectedLSN = reconcile()
+	catalog = awaitCatalog(source)
+	if err := source.Verify(ctx, pol.WithCatalog(catalog)); err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.QueryRow(ctx, "SELECT allowed FROM staff_test.records").Scan(&value); err == nil {
+		t.Fatal("reclassified column was still readable")
+	}
+}

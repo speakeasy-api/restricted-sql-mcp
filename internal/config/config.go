@@ -18,6 +18,13 @@ import (
 type Config struct {
 	Dialect                   policy.Dialect
 	DSN                       string
+	StaffMode                 string
+	StaffLogins               []string
+	StaffAccounts             string
+	StaffAudience             string
+	StaffOrganization         string
+	StaffReplayLSN            string
+	StaffVerifierPassword     string
 	AnnotationTiers           []string
 	AnnotationRefreshInterval time.Duration
 	AnnotationRefreshTimeout  time.Duration
@@ -82,7 +89,9 @@ var ErrHelp = flag.ErrHelp
 func ParseFlags(args []string, getenv func(string) string, version string) (*Config, error) {
 	c := &Config{Version: version}
 	fs := flag.NewFlagSet("restrictedsql-mcp", flag.ContinueOnError)
-	var dialect, readTables, writeTables, annotationTiers string
+	var dialect, readTables, writeTables, annotationTiers, staffLogins string
+	fs.StringVar(&c.StaffMode, "staff-mode", "", "staff database mode: reconcile|serve")
+	fs.StringVar(&staffLogins, "staff-logins", "", "comma-separated dedicated Postgres logins for reconciliation")
 	fs.StringVar(&dialect, "dialect", "", "database dialect: postgres|clickhouse (required)")
 	fs.StringVar(&c.DSN, "dsn", "", "database connection URL (or env DATABASE_URL; required)")
 	fs.StringVar(&readTables, "read-tables", "", "comma-separated tables readable by the read tools; <schema>.* adds every table in the schema at boot (postgres only; required unless using columns-from-annotations)")
@@ -131,6 +140,12 @@ func ParseFlags(args []string, getenv func(string) string, version string) (*Con
 	if c.DSN == "" {
 		c.DSN = getenv("DATABASE_URL")
 	}
+	c.StaffLogins = splitList(staffLogins)
+	c.StaffAccounts = getenv("STAFF_SQL_ACCOUNTS")
+	c.StaffAudience = getenv("STAFF_SQL_AUDIENCE")
+	c.StaffOrganization = getenv("STAFF_SQL_ORGANIZATION")
+	c.StaffReplayLSN = getenv("STAFF_SQL_REPLAY_LSN")
+	c.StaffVerifierPassword = getenv("STAFF_SQL_VERIFIER_PASSWORD")
 	c.TunnelGatewayURL = getenv("TUNNEL_GATEWAY_URL")
 	c.TunnelKey = getenv("TUNNEL_KEY")
 	c.TunnelServiceVersion = getenv("TUNNEL_SERVICE_VERSION")
@@ -153,7 +168,12 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("--dialect %q is not supported (postgres|clickhouse)", c.Dialect)
 	}
-	if strings.TrimSpace(c.DSN) == "" {
+	if c.StaffMode != "" {
+		if err := c.validateStaff(); err != nil {
+			return err
+		}
+	}
+	if c.StaffMode != "serve" && strings.TrimSpace(c.DSN) == "" {
 		return errors.New("--dsn or DATABASE_URL is required")
 	}
 	if len(c.AnnotationTiers) > 0 {
@@ -168,7 +188,7 @@ func (c *Config) Validate() error {
 		if c.WritesEnabled || len(c.WriteTables) > 0 || len(c.WriteSchemas) > 0 {
 			return errors.New("annotation mode is read-only; write flags are not supported")
 		}
-		if !c.ConnectionLevelSecurity {
+		if !c.ConnectionLevelSecurity && c.StaffMode == "" {
 			return errors.New("--columns-from-annotations requires --connection-level-security")
 		}
 		if c.AnnotationRefreshInterval <= 0 || c.AnnotationRefreshTimeout <= 0 {

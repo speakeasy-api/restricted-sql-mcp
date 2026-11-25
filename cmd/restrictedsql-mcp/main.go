@@ -83,6 +83,10 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	if cfg.StaffMode != "" {
+		return runStaff(ctx, stop, cfg, pol, logger)
+	}
+
 	if len(cfg.ReadSchemas) > 0 || len(cfg.WriteSchemas) > 0 {
 		expandCtx, cancel := context.WithTimeout(ctx, bootProvisionTimeout)
 		err := dbsec.ExpandSchemas(expandCtx, cfg.DSN, pol, cfg.ReadSchemas, cfg.WriteSchemas)
@@ -190,6 +194,12 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 		return server.Run(ctx, &mcp.StdioTransport{})
 	}
 
+	return serveHTTP(ctx, stop, cfg, pol, logger, nil, func(*http.Request) *mcp.Server { return server }, nil, backend)
+}
+
+func serveHTTP(ctx context.Context, stop context.CancelFunc, cfg *config.Config, pol *policy.Policy, logger *slog.Logger, ready func(context.Context) error, selectServer func(*http.Request) *mcp.Server, authenticate func(http.Handler) http.Handler, backend db.Backend) error {
+	var err error
+
 	var runner *tunnel.Runner
 	var gate *tunnel.Gate
 	localURL := localMCPURL(cfg.Listen)
@@ -216,16 +226,22 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 	}
 
 	checker := health.New(backend, runner.State, logger)
+	if backend == nil {
+		checker = health.NewWithCheck(ready, runner.State, logger)
+	}
 	mux := http.NewServeMux()
 	// Stateless (MCP 2026-07-28): no Mcp-Session-Id, nothing held per client
 	// between requests. The only cross-request state is an open write
 	// transaction, addressed by its transaction_id and bounded by
 	// --txn-idle-timeout and --txn-max-lifetime.
-	var mcpHandler http.Handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
+	var mcpHandler http.Handler = mcp.NewStreamableHTTPHandler(selectServer, &mcp.StreamableHTTPOptions{
 		Logger:                       logger,
 		Stateless:                    true,
 		PropagateRequestCancellation: true,
 	})
+	if authenticate != nil {
+		mcpHandler = authenticate(mcpHandler)
+	}
 	if gate != nil {
 		mcpHandler = gate.Wrap(mcpHandler)
 	}

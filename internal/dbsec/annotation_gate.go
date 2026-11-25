@@ -253,6 +253,13 @@ func (g *AnnotationGate) EnsureProvisioned(ctx context.Context) error {
 	return g.Refresh(ctx)
 }
 func (g *AnnotationGate) RefreshColumns(ctx context.Context) error { return nil } // coordinator already refreshed in readiness
+// Ready reports the latest completed catalog and grant verification.
+func (g *AnnotationGate) Ready() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.ready && !g.closed
+}
+
 func (g *AnnotationGate) Ping(ctx context.Context) error {
 	g.mu.Lock()
 	ready, reason, b := g.ready, g.reason, g.inner

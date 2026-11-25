@@ -23,12 +23,13 @@ import (
 
 // Deps are the collaborators the tool handlers use.
 type Deps struct {
-	Policy  *policy.Policy
-	Guard   sqlguard.Guard
-	Backend db.Backend
-	Txns    *txn.Registry // nil unless writes are enabled and the backend supports them
-	Logger  *slog.Logger
-	Version string
+	Policy         *policy.Policy
+	Guard          sqlguard.Guard
+	Backend        db.Backend
+	Txns           *txn.Registry // nil unless writes are enabled and the backend supports them
+	Logger         *slog.Logger
+	Version        string
+	DisableExplain bool
 	// DefaultDatabase names the DSN's database; a database argument equal to
 	// it (or empty) targets Policy and Backend. "" when the DSN names none.
 	DefaultDatabase string
@@ -63,7 +64,9 @@ func New(d Deps) *mcp.Server {
 	})
 	s.registerReadTools(srv)
 	s.registerMetaTools(srv)
-	s.registerExplainTool(srv)
+	if !d.DisableExplain {
+		s.registerExplainTool(srv)
+	}
 	if d.Policy.WritesEnabled {
 		s.registerWriteTools(srv)
 	}
