@@ -58,26 +58,26 @@ type execer interface {
 // connection-level security, else the read DSN); probe is the read pool
 // unless WithProbePool.
 type Backend struct {
-	read       *pgxpool.Pool
-	write      *pgxpool.Pool
-	probe      *pgxpool.Pool
-	pol        *policy.Policy
-	log        *slog.Logger
-	txnIdle    time.Duration
-	staffCheck func(context.Context, *pgx.Conn) error
-	staffSlots chan struct{}
+	read         *pgxpool.Pool
+	write        *pgxpool.Pool
+	probe        *pgxpool.Pool
+	pol          *policy.Policy
+	log          *slog.Logger
+	txnIdle      time.Duration
+	replicaCheck func(context.Context, *pgx.Conn) error
+	replicaSlots chan struct{}
 }
 
 // Option tunes the backend at construction.
 type Option func(*options)
 
 type options struct {
-	maxConns    int
-	maxOpenTxns int
-	txnIdle     time.Duration
-	probePool   bool
-	staffCheck  func(context.Context, *pgx.Conn) error
-	staffSlots  chan struct{}
+	maxConns     int
+	maxOpenTxns  int
+	txnIdle      time.Duration
+	probePool    bool
+	replicaCheck func(context.Context, *pgx.Conn) error
+	replicaSlots chan struct{}
 }
 
 // WithMaxConns caps the connections used for reads (queries, explain,
@@ -105,11 +105,11 @@ func WithProbePool() Option {
 	return func(o *options) { o.probePool = true }
 }
 
-// WithStaffReplica checks the connection before each staff query and caps
-// concurrent staff queries across the per-user pools.
-func WithStaffReplica(check func(context.Context, *pgx.Conn) error, slots chan struct{}) Option {
+// WithReplicaCheck checks the connection before each replica query and caps
+// concurrent replica queries across the per-user pools.
+func WithReplicaCheck(check func(context.Context, *pgx.Conn) error, slots chan struct{}) Option {
 	return func(o *options) {
-		o.staffCheck, o.staffSlots = check, slots
+		o.replicaCheck, o.replicaSlots = check, slots
 	}
 }
 
@@ -134,11 +134,11 @@ func NewWithWriteDSN(ctx context.Context, readDSN, writeDSN string, pol *policy.
 	if reads <= 0 {
 		reads = defaultMaxConns
 	}
-	b := &Backend{pol: pol, log: logger, txnIdle: o.txnIdle, staffCheck: o.staffCheck, staffSlots: o.staffSlots}
+	b := &Backend{pol: pol, log: logger, txnIdle: o.txnIdle, replicaCheck: o.replicaCheck, replicaSlots: o.replicaSlots}
 	var err error
 	if b.read, err = newPool(ctx, readDSN, reads); err != nil {
-		if b.staffCheck != nil {
-			return nil, errors.New("could not configure the staff replica pool")
+		if b.replicaCheck != nil {
+			return nil, errors.New("could not configure the read replica pool")
 		}
 		return nil, err
 	}
@@ -163,7 +163,7 @@ func NewWithWriteDSN(ctx context.Context, readDSN, writeDSN string, pol *policy.
 			return nil, err
 		}
 	}
-	if b.staffCheck != nil {
+	if b.replicaCheck != nil {
 		return b, nil
 	}
 	pingCtx, cancel := context.WithTimeout(ctx, bootPingTimeout)
@@ -243,13 +243,13 @@ ORDER BY n.nspname, c.relname, a.attnum`
 func (b *Backend) Dialect() policy.Dialect { return policy.Postgres }
 
 func (b *Backend) Ping(ctx context.Context) error {
-	if b.staffCheck != nil {
+	if b.replicaCheck != nil {
 		conn, err := b.probe.Acquire(ctx)
 		if err != nil {
-			return errors.New("could not connect to the staff replica")
+			return errors.New("could not connect to the read replica")
 		}
 		defer conn.Release()
-		return b.staffCheck(ctx, conn.Conn())
+		return b.replicaCheck(ctx, conn.Conn())
 	}
 	err := b.probe.Ping(ctx)
 	if err != nil {
@@ -274,13 +274,13 @@ func (b *Backend) Close() error {
 func (b *Backend) beginReadOnly(ctx context.Context) (*pgxpool.Conn, pgx.Tx, error) {
 	conn, err := b.read.Acquire(ctx)
 	if err != nil {
-		if b.staffCheck != nil {
-			return nil, nil, errors.New("could not connect to the staff replica")
+		if b.replicaCheck != nil {
+			return nil, nil, errors.New("could not connect to the read replica")
 		}
 		return nil, nil, fmt.Errorf("acquire connection: %w", err)
 	}
-	if b.staffCheck != nil {
-		if err := b.staffCheck(ctx, conn.Conn()); err != nil {
+	if b.replicaCheck != nil {
+		if err := b.replicaCheck(ctx, conn.Conn()); err != nil {
 			conn.Release()
 			return nil, nil, err
 		}
@@ -322,10 +322,10 @@ func applySessionSettings(ctx context.Context, tx execer, pol *policy.Policy) er
 // Query runs canonical read-only SQL inside a READ ONLY transaction that is
 // always rolled back.
 func (b *Backend) Query(ctx context.Context, canonicalSQL string, maxRows int) (*db.Result, error) {
-	if b.staffSlots != nil {
+	if b.replicaSlots != nil {
 		select {
-		case b.staffSlots <- struct{}{}:
-			defer func() { <-b.staffSlots }()
+		case b.replicaSlots <- struct{}{}:
+			defer func() { <-b.replicaSlots }()
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -348,7 +348,7 @@ func (b *Backend) Query(ctx context.Context, canonicalSQL string, maxRows int) (
 		return nil, err
 	}
 	maxBytes := 0
-	if b.staffCheck != nil {
+	if b.replicaCheck != nil {
 		maxBytes = 256 << 10
 	}
 	res, err := collectRowsBounded(rows, conn.Conn().TypeMap(), maxRows, maxBytes)

@@ -13,10 +13,10 @@ import (
 
 // Run against an isolated primary and its streaming standby. The primary
 // must accept the test admin DSN. Never point this test at a shared database.
-func TestStaffPrimaryAndReplica(t *testing.T) {
-	primary, replica := os.Getenv("STAFF_TEST_PRIMARY"), os.Getenv("STAFF_TEST_REPLICA")
+func TestGrantsOnPrimaryAndReplica(t *testing.T) {
+	primary, replica := os.Getenv("REPLICA_TEST_PRIMARY"), os.Getenv("REPLICA_TEST_REPLICA")
 	if primary == "" || replica == "" {
-		t.Skip("requires isolated STAFF_TEST_PRIMARY and STAFF_TEST_REPLICA")
+		t.Skip("requires isolated REPLICA_TEST_PRIMARY and REPLICA_TEST_REPLICA")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -27,27 +27,27 @@ func TestStaffPrimaryAndReplica(t *testing.T) {
 	defer closePG(admin)
 
 	_, err = admin.Exec(ctx, `
-CREATE ROLE "pilot+restricted-sql@speakeasy.com" LOGIN PASSWORD 'pilot-password';
-CREATE ROLE restricted_sql_staff_verify LOGIN PASSWORD 'verify-password';
-CREATE ROLE restricted_sql_staff_grants LOGIN PASSWORD 'grant-password';
-CREATE SCHEMA staff_test;
-CREATE TABLE staff_test.records (allowed text, hidden text);
-INSERT INTO staff_test.records VALUES ('a', 'b');
-COMMENT ON COLUMN staff_test.records.allowed IS '@access: confidential';
-GRANT USAGE ON SCHEMA staff_test TO restricted_sql_staff_grants WITH GRANT OPTION;
-GRANT SELECT ON staff_test.records TO restricted_sql_staff_grants WITH GRANT OPTION;
+CREATE ROLE "example_reader" LOGIN PASSWORD 'pilot-password';
+CREATE ROLE restricted_sql_verify LOGIN PASSWORD 'verify-password';
+CREATE ROLE restricted_sql_grants LOGIN PASSWORD 'grant-password';
+CREATE SCHEMA replica_test;
+CREATE TABLE replica_test.records (allowed text, hidden text);
+INSERT INTO replica_test.records VALUES ('a', 'b');
+COMMENT ON COLUMN replica_test.records.allowed IS '@access: confidential';
+GRANT USAGE ON SCHEMA replica_test TO restricted_sql_grants WITH GRANT OPTION;
+GRANT SELECT ON replica_test.records TO restricted_sql_grants WITH GRANT OPTION;
 `)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const role = "pilot+restricted-sql@speakeasy.com"
-	grantsDSN, _ := RewriteDSN(primary, "restricted_sql_staff_grants", "grant-password")
+	const role = "example_reader"
+	grantsDSN, _ := RewriteDSN(primary, "restricted_sql_grants", "grant-password")
 	readDSN, _ := RewriteDSN(replica, role, "pilot-password")
-	verifyDSN, _ := RewriteDSN(replica, "restricted_sql_staff_verify", "verify-password")
+	verifyDSN, _ := RewriteDSN(replica, "restricted_sql_verify", "verify-password")
 	pol := &policy.Policy{Dialect: policy.Postgres, AnnotationTiers: map[policy.Tier]bool{"confidential": true}}
 	reconcile := func() string {
 		t.Helper()
-		lsn, err := ReconcileStaffGrants(ctx, grantsDSN, []string{role}, pol)
+		lsn, err := ReconcileReplicaGrants(ctx, grantsDSN, []string{role}, pol)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -57,7 +57,7 @@ GRANT SELECT ON staff_test.records TO restricted_sql_staff_grants WITH GRANT OPT
 	lsn := reconcile()
 	source := ReplicaAnnotations{
 		ReadDSN: readDSN, Role: role, ExpectedLSN: lsn,
-		VerifierDSN: verifyDSN, VerifierRole: "restricted_sql_staff_verify",
+		VerifierDSN: verifyDSN, VerifierRole: "restricted_sql_verify",
 	}
 	awaitCatalog := func(source ReplicaAnnotations) *policy.Catalog {
 		t.Helper()
@@ -85,10 +85,10 @@ GRANT SELECT ON staff_test.records TO restricted_sql_staff_grants WITH GRANT OPT
 		t.Fatal(err)
 	}
 	var value string
-	if err := reader.QueryRow(ctx, "SELECT allowed FROM staff_test.records").Scan(&value); err != nil || value != "a" {
+	if err := reader.QueryRow(ctx, "SELECT allowed FROM replica_test.records").Scan(&value); err != nil || value != "a" {
 		t.Fatalf("permitted column result: %q, %v", value, err)
 	}
-	if err := reader.QueryRow(ctx, "SELECT hidden FROM staff_test.records").Scan(&value); err == nil {
+	if err := reader.QueryRow(ctx, "SELECT hidden FROM replica_test.records").Scan(&value); err == nil {
 		t.Fatal("unclassified column was readable")
 	}
 
@@ -102,12 +102,12 @@ GRANT SELECT ON staff_test.records TO restricted_sql_staff_grants WITH GRANT OPT
 	if _, err := wrongEndpoint.Load(ctx); err == nil {
 		t.Fatal("serving verifier accepted stale WAL replay")
 	}
-	standbyGrants, _ := RewriteDSN(replica, "restricted_sql_staff_grants", "grant-password")
-	if _, err := ReconcileStaffGrants(ctx, standbyGrants, []string{role}, pol); err == nil || !strings.Contains(err.Error(), "requires the primary") {
+	standbyGrants, _ := RewriteDSN(replica, "restricted_sql_grants", "grant-password")
+	if _, err := ReconcileReplicaGrants(ctx, standbyGrants, []string{role}, pol); err == nil || !strings.Contains(err.Error(), "requires the primary") {
 		t.Fatalf("reconciliation on standby returned %v", err)
 	}
 
-	if _, err := admin.Exec(ctx, "COMMENT ON COLUMN staff_test.records.allowed IS '@access: restricted'"); err != nil {
+	if _, err := admin.Exec(ctx, "COMMENT ON COLUMN replica_test.records.allowed IS '@access: restricted'"); err != nil {
 		t.Fatal(err)
 	}
 	source.ExpectedLSN = reconcile()
@@ -115,7 +115,7 @@ GRANT SELECT ON staff_test.records TO restricted_sql_staff_grants WITH GRANT OPT
 	if err := source.Verify(ctx, pol.WithCatalog(catalog)); err != nil {
 		t.Fatal(err)
 	}
-	if err := reader.QueryRow(ctx, "SELECT allowed FROM staff_test.records").Scan(&value); err == nil {
+	if err := reader.QueryRow(ctx, "SELECT allowed FROM replica_test.records").Scan(&value); err == nil {
 		t.Fatal("reclassified column was still readable")
 	}
 }

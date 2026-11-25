@@ -83,8 +83,8 @@ func run(cfg *config.Config, pol *policy.Policy, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if cfg.StaffMode != "" {
-		return runStaff(ctx, stop, cfg, pol, logger)
+	if cfg.ReplicaMode != "" {
+		return runReplica(ctx, stop, cfg, pol, logger)
 	}
 
 	if len(cfg.ReadSchemas) > 0 || len(cfg.WriteSchemas) > 0 {

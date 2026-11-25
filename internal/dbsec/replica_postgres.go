@@ -9,10 +9,10 @@ import (
 	"github.com/speakeasy-api/restricted-sql-mcp/internal/policy"
 )
 
-// ReconcileStaffGrants applies the confidential policy to existing, dedicated
+// ReconcileReplicaGrants applies the configured annotation policy to existing, dedicated
 // logins. Role creation and credentials are managed separately. The returned
 // WAL position is a conservative replay floor for opening the replica.
-func ReconcileStaffGrants(ctx context.Context, dsn string, roles []string, base *policy.Policy) (string, error) {
+func ReconcileReplicaGrants(ctx context.Context, dsn string, roles []string, base *policy.Policy) (string, error) {
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
 		return "", errors.New("could not connect to the grant database")
@@ -29,7 +29,7 @@ func ReconcileStaffGrants(ctx context.Context, dsn string, roles []string, base 
 		return "", err
 	}
 	if !locked {
-		return "", errors.New("another staff grant reconciliation is running")
+		return "", errors.New("another replica grant reconciliation is running")
 	}
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
@@ -48,7 +48,7 @@ func ReconcileStaffGrants(ctx context.Context, dsn string, roles []string, base 
 	}
 	pol := base.WithCatalog(catalog)
 	for _, role := range roles {
-		if err := verifyStaffRole(ctx, tx, role); err != nil {
+		if err := verifyReplicaRole(ctx, tx, role); err != nil {
 			return "", err
 		}
 		// PostgreSQL also revokes the matching column ACLs on a table REVOKE.
@@ -73,7 +73,7 @@ func ReconcileStaffGrants(ctx context.Context, dsn string, roles []string, base 
 		if err := runStatements(ctx, tx, stmts); err != nil {
 			return "", err
 		}
-		if err := verifyStaffGrants(ctx, tx, role, pol); err != nil {
+		if err := verifyReplicaGrants(ctx, tx, role, pol); err != nil {
 			return "", err
 		}
 	}
@@ -124,10 +124,10 @@ func (p *ReplicaAnnotations) checkReplica(ctx context.Context, db interface {
 	var replica, replayed bool
 	var role string
 	if err := db.QueryRow(ctx, "SELECT pg_catalog.pg_is_in_recovery(), coalesce(pg_catalog.pg_last_wal_replay_lsn() >= $1::pg_lsn, false), session_user", p.ExpectedLSN).Scan(&replica, &replayed, &role); err != nil {
-		return errors.New("could not verify the staff replica")
+		return errors.New("could not verify the read replica")
 	}
 	if !replica || !replayed || role != expectedRole {
-		return errors.New("staff database must be the configured replica, login and replay position")
+		return errors.New("database must be the configured replica, login and replay position")
 	}
 	return nil
 }
@@ -143,7 +143,7 @@ func (p *ReplicaAnnotations) inspect(ctx context.Context, pol *policy.Policy) (*
 	}
 	conn, err := pgx.Connect(ctx, p.VerifierDSN)
 	if err != nil {
-		return nil, errors.New("could not connect to the staff read replica")
+		return nil, errors.New("could not connect to the read replica")
 	}
 	defer closePG(conn)
 	// Observe the replay floor before establishing the catalog snapshot.
@@ -163,23 +163,23 @@ func (p *ReplicaAnnotations) inspect(ctx context.Context, pol *policy.Policy) (*
 		if pol.Catalog.Digest != cat.Digest {
 			return nil, errors.New("replica catalog changed during grant verification")
 		}
-		if err := verifyStaffRole(ctx, tx, p.Role); err != nil {
+		if err := verifyReplicaRole(ctx, tx, p.Role); err != nil {
 			return nil, err
 		}
-		if err := verifyStaffGrants(ctx, tx, p.Role, pol); err != nil {
+		if err := verifyReplicaGrants(ctx, tx, p.Role, pol); err != nil {
 			return nil, err
 		}
 	}
 	return cat, tx.Commit(ctx)
 }
 
-func verifyStaffRole(ctx context.Context, tx pgx.Tx, role string) error {
+func verifyReplicaRole(ctx context.Context, tx pgx.Tx, role string) error {
 	var permitted bool
 	err := tx.QueryRow(ctx, `
 SELECT rolcanlogin AND (rolname <> session_user OR pg_catalog.pg_is_in_recovery())
 FROM pg_catalog.pg_roles WHERE rolname=$1`, role).Scan(&permitted)
 	if err != nil || !permitted {
-		return fmt.Errorf("staff role %q must be an existing dedicated login", role)
+		return fmt.Errorf("replica role %q must be an existing dedicated login", role)
 	}
 	var excess bool
 	err = tx.QueryRow(ctx, `
@@ -195,12 +195,12 @@ SELECT pg_catalog.has_database_privilege($1, current_database(), 'CREATE')
 		return err
 	}
 	if excess {
-		return fmt.Errorf("staff role %q has database CREATE, table MAINTAIN or sequence access", role)
+		return fmt.Errorf("replica role %q has database CREATE, table MAINTAIN or sequence access", role)
 	}
 	return nil
 }
 
-func verifyStaffGrants(ctx context.Context, tx pgx.Tx, role string, pol *policy.Policy) error {
+func verifyReplicaGrants(ctx context.Context, tx pgx.Tx, role string, pol *policy.Policy) error {
 	if err := verifyPGAnnotations(ctx, tx, role, pol); err != nil {
 		return err
 	}
@@ -216,7 +216,7 @@ func verifyStaffGrants(ctx context.Context, tx pgx.Tx, role string, pol *policy.
 			return err
 		}
 		if !usage {
-			return fmt.Errorf("staff login is missing USAGE on schema %q", schema)
+			return fmt.Errorf("replica login is missing USAGE on schema %q", schema)
 		}
 	}
 	return nil

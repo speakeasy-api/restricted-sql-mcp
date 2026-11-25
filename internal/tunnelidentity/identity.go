@@ -1,5 +1,5 @@
-// Package staffidentity verifies AICP assertions for the private staff tunnel.
-package staffidentity
+// Package tunnelidentity verifies AICP assertions for the private tunnel.
+package tunnelidentity
 
 import (
 	"context"
@@ -22,7 +22,7 @@ const (
 	jwksURL = Issuer + "/.well-known/jwks.json"
 )
 
-var errIdentity = errors.New("invalid staff identity assertion")
+var errIdentity = errors.New("invalid tunnel identity assertion")
 
 type Claims struct {
 	jwt.RegisteredClaims
