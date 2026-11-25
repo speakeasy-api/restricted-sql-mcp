@@ -38,6 +38,14 @@ func (p *PostgresAnnotations) Load(ctx context.Context) (*policy.Catalog, error)
 		return nil, err
 	}
 	defer tx.Rollback(context.Background())
+	cat, err := loadPGAnnotations(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	return cat, tx.Commit(ctx)
+}
+
+func loadPGAnnotations(ctx context.Context, tx pgx.Tx) (*policy.Catalog, error) {
 	if err := checkPGResolutionHooks(ctx, tx); err != nil {
 		return nil, err
 	}
@@ -171,9 +179,6 @@ func (p *PostgresAnnotations) Load(ctx context.Context) (*policy.Catalog, error)
 	}
 	constraints.Close()
 	if err := constraints.Err(); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return cat, cat.Seal()

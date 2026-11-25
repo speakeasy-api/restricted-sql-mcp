@@ -19,6 +19,7 @@ const probeTimeout = 3 * time.Second
 // Checker evaluates readiness on every probe.
 type Checker struct {
 	backend     db.Backend
+	check       func(context.Context) error
 	tunnelState func() string
 	timeout     time.Duration
 	logger      *slog.Logger
@@ -34,6 +35,13 @@ func New(b db.Backend, tunnelState func() string, logger *slog.Logger) *Checker 
 		tunnelState = func() string { return "disabled" }
 	}
 	return &Checker{backend: b, tunnelState: tunnelState, timeout: probeTimeout, logger: logger}
+}
+
+// NewWithCheck evaluates readiness for a server with multiple backends.
+func NewWithCheck(check func(context.Context) error, tunnelState func() string, logger *slog.Logger) *Checker {
+	c := New(nil, tunnelState, logger)
+	c.check = check
+	return c
 }
 
 // Healthz reports liveness: 200 once the process is serving.
@@ -72,6 +80,12 @@ type provisioned interface {
 
 // evaluate returns an empty string when ready, else the reason.
 func (c *Checker) evaluate(ctx context.Context) string {
+	if c.check != nil {
+		if err := c.check(ctx); err != nil {
+			return err.Error()
+		}
+		return ""
+	}
 	if p, ok := c.backend.(provisioned); ok {
 		if err := p.EnsureProvisioned(ctx); err != nil {
 			return err.Error()

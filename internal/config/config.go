@@ -3,6 +3,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -16,13 +17,23 @@ import (
 
 // Config is the resolved boot configuration.
 type Config struct {
-	Dialect                   policy.Dialect
-	DSN                       string
-	AnnotationTiers           []string
-	AnnotationRefreshInterval time.Duration
-	AnnotationRefreshTimeout  time.Duration
-	ReadTables                []string
-	WriteTables               []string
+	Dialect                     policy.Dialect
+	DSN                         string
+	ReplicaMode                 string
+	ReplicaPrincipals           []ReplicaPrincipal
+	ReplicaPasswords            string
+	ReplicaIssuer               string
+	ReplicaAudience             string
+	ReplicaOrganization         string
+	ReplicaReplayLSN            string
+	ReplicaVerifierPassword     string
+	ReplicaVerifierLogin        string
+	ReplicaMaxConcurrentQueries int
+	AnnotationTiers             []string
+	AnnotationRefreshInterval   time.Duration
+	AnnotationRefreshTimeout    time.Duration
+	ReadTables                  []string
+	WriteTables                 []string
 	// ReadSchemas and WriteSchemas come from `<schema>.*` entries in
 	// --read-tables and --write-tables. Every table in them is added to the
 	// policy at boot (Postgres only); tables created later need a restart.
@@ -83,10 +94,12 @@ func ParseFlags(args []string, getenv func(string) string, version string) (*Con
 	c := &Config{Version: version}
 	fs := flag.NewFlagSet("restrictedsql-mcp", flag.ContinueOnError)
 	var dialect, readTables, writeTables, annotationTiers string
+	fs.StringVar(&c.ReplicaMode, "replica-mode", "", "annotated Postgres replica access mode: reconcile|serve")
+	fs.IntVar(&c.ReplicaMaxConcurrentQueries, "replica-max-concurrent-queries", 2, "maximum concurrent queries across all replica logins")
 	fs.StringVar(&dialect, "dialect", "", "database dialect: postgres|clickhouse (required)")
 	fs.StringVar(&c.DSN, "dsn", "", "database connection URL (or env DATABASE_URL; required)")
 	fs.StringVar(&readTables, "read-tables", "", "comma-separated tables readable by the read tools; <schema>.* adds every table in the schema at boot (postgres only; required unless using columns-from-annotations)")
-	fs.StringVar(&annotationTiers, "columns-from-annotations", "", "comma-separated @access classes whose columns are readable, e.g. safe or safe,pii; all other classes are denied (requires connection-level-security)")
+	fs.StringVar(&annotationTiers, "columns-from-annotations", "", "comma-separated @access classes whose columns are readable, e.g. safe or safe,pii; all other classes are denied (requires connection-level-security or replica mode)")
 	fs.DurationVar(&c.AnnotationRefreshInterval, "annotation-refresh-interval", 30*time.Second, "periodic catalog and column-grant refresh interval")
 	fs.DurationVar(&c.AnnotationRefreshTimeout, "annotation-refresh-timeout", 10*time.Second, "maximum catalog/grant refresh and drain duration")
 	fs.StringVar(&writeTables, "write-tables", "", "comma-separated tables writable by the write tools; <schema>.* adds every table in the schema at boot (postgres only; optional)")
@@ -131,6 +144,17 @@ func ParseFlags(args []string, getenv func(string) string, version string) (*Con
 	if c.DSN == "" {
 		c.DSN = getenv("DATABASE_URL")
 	}
+	if c.ReplicaMode != "" {
+		if err := json.Unmarshal([]byte(getenv("RESTRICTED_SQL_ROSTER")), &c.ReplicaPrincipals); err != nil {
+			return nil, errors.New("RESTRICTED_SQL_ROSTER must be a JSON array of callers")
+		}
+	}
+	c.ReplicaPasswords = getenv("RESTRICTED_SQL_PASSWORDS")
+	c.ReplicaVerifierLogin = getenv("RESTRICTED_SQL_VERIFIER_LOGIN")
+	c.ReplicaAudience = getenv("RESTRICTED_SQL_AUDIENCE")
+	c.ReplicaOrganization = getenv("RESTRICTED_SQL_ORGANIZATION")
+	c.ReplicaReplayLSN = getenv("RESTRICTED_SQL_REPLAY_LSN")
+	c.ReplicaVerifierPassword = getenv("RESTRICTED_SQL_VERIFIER_PASSWORD")
 	c.TunnelGatewayURL = getenv("TUNNEL_GATEWAY_URL")
 	c.TunnelKey = getenv("TUNNEL_KEY")
 	c.TunnelServiceVersion = getenv("TUNNEL_SERVICE_VERSION")
@@ -153,7 +177,12 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("--dialect %q is not supported (postgres|clickhouse)", c.Dialect)
 	}
-	if strings.TrimSpace(c.DSN) == "" {
+	if c.ReplicaMode != "" {
+		if err := c.validateReplica(); err != nil {
+			return err
+		}
+	}
+	if c.ReplicaMode != "serve" && strings.TrimSpace(c.DSN) == "" {
 		return errors.New("--dsn or DATABASE_URL is required")
 	}
 	if len(c.AnnotationTiers) > 0 {
@@ -168,8 +197,8 @@ func (c *Config) Validate() error {
 		if c.WritesEnabled || len(c.WriteTables) > 0 || len(c.WriteSchemas) > 0 {
 			return errors.New("annotation mode is read-only; write flags are not supported")
 		}
-		if !c.ConnectionLevelSecurity {
-			return errors.New("--columns-from-annotations requires --connection-level-security")
+		if !c.ConnectionLevelSecurity && c.ReplicaMode == "" {
+			return errors.New("--columns-from-annotations requires --connection-level-security or --replica-mode")
 		}
 		if c.AnnotationRefreshInterval <= 0 || c.AnnotationRefreshTimeout <= 0 {
 			return errors.New("annotation refresh durations must be positive")

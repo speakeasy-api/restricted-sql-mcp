@@ -58,22 +58,26 @@ type execer interface {
 // connection-level security, else the read DSN); probe is the read pool
 // unless WithProbePool.
 type Backend struct {
-	read    *pgxpool.Pool
-	write   *pgxpool.Pool
-	probe   *pgxpool.Pool
-	pol     *policy.Policy
-	log     *slog.Logger
-	txnIdle time.Duration
+	read         *pgxpool.Pool
+	write        *pgxpool.Pool
+	probe        *pgxpool.Pool
+	pol          *policy.Policy
+	log          *slog.Logger
+	txnIdle      time.Duration
+	replicaCheck func(context.Context, *pgx.Conn) error
+	replicaSlots chan struct{}
 }
 
 // Option tunes the backend at construction.
 type Option func(*options)
 
 type options struct {
-	maxConns    int
-	maxOpenTxns int
-	txnIdle     time.Duration
-	probePool   bool
+	maxConns     int
+	maxOpenTxns  int
+	txnIdle      time.Duration
+	probePool    bool
+	replicaCheck func(context.Context, *pgx.Conn) error
+	replicaSlots chan struct{}
 }
 
 // WithMaxConns caps the connections used for reads (queries, explain,
@@ -101,6 +105,14 @@ func WithProbePool() Option {
 	return func(o *options) { o.probePool = true }
 }
 
+// WithReplicaCheck checks the connection before each replica query and caps
+// concurrent replica queries across the per-user pools.
+func WithReplicaCheck(check func(context.Context, *pgx.Conn) error, slots chan struct{}) Option {
+	return func(o *options) {
+		o.replicaCheck, o.replicaSlots = check, slots
+	}
+}
+
 // New parses the DSN and creates the pool without requiring the database to
 // be reachable; connectivity is reported by Ping (and therefore /readyz).
 func New(ctx context.Context, dsn string, pol *policy.Policy, logger *slog.Logger, opts ...Option) (*Backend, error) {
@@ -122,9 +134,12 @@ func NewWithWriteDSN(ctx context.Context, readDSN, writeDSN string, pol *policy.
 	if reads <= 0 {
 		reads = defaultMaxConns
 	}
-	b := &Backend{pol: pol, log: logger, txnIdle: o.txnIdle}
+	b := &Backend{pol: pol, log: logger, txnIdle: o.txnIdle, replicaCheck: o.replicaCheck, replicaSlots: o.replicaSlots}
 	var err error
 	if b.read, err = newPool(ctx, readDSN, reads); err != nil {
+		if b.replicaCheck != nil {
+			return nil, errors.New("could not configure the read replica pool")
+		}
 		return nil, err
 	}
 	// Transactions get a pool of their own whose connections are closed when
@@ -147,6 +162,9 @@ func NewWithWriteDSN(ctx context.Context, readDSN, writeDSN string, pol *policy.
 			_ = b.Close()
 			return nil, err
 		}
+	}
+	if b.replicaCheck != nil {
+		return b, nil
 	}
 	pingCtx, cancel := context.WithTimeout(ctx, bootPingTimeout)
 	defer cancel()
@@ -225,6 +243,14 @@ ORDER BY n.nspname, c.relname, a.attnum`
 func (b *Backend) Dialect() policy.Dialect { return policy.Postgres }
 
 func (b *Backend) Ping(ctx context.Context) error {
+	if b.replicaCheck != nil {
+		conn, err := b.probe.Acquire(ctx)
+		if err != nil {
+			return errors.New("could not connect to the read replica")
+		}
+		defer conn.Release()
+		return b.replicaCheck(ctx, conn.Conn())
+	}
 	err := b.probe.Ping(ctx)
 	if err != nil {
 		b.log.Debug("ping failed", "error", err.Error())
@@ -248,6 +274,9 @@ func (b *Backend) Close() error {
 func (b *Backend) beginReadOnly(ctx context.Context) (*pgxpool.Conn, pgx.Tx, error) {
 	conn, err := b.read.Acquire(ctx)
 	if err != nil {
+		if b.replicaCheck != nil {
+			return nil, nil, errors.New("could not connect to the read replica")
+		}
 		return nil, nil, fmt.Errorf("acquire connection: %w", err)
 	}
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
@@ -259,6 +288,14 @@ func (b *Backend) beginReadOnly(ctx context.Context) (*pgxpool.Conn, pgx.Tx, err
 		_ = tx.Rollback(ctx)
 		conn.Release()
 		return nil, nil, err
+	}
+	if b.replicaCheck != nil {
+		// The connection is inside the read-only transaction just opened.
+		if err := b.replicaCheck(ctx, conn.Conn()); err != nil {
+			rollbackQuietly(tx)
+			conn.Release()
+			return nil, nil, err
+		}
 	}
 	return conn, tx, nil
 }
@@ -287,6 +324,14 @@ func applySessionSettings(ctx context.Context, tx execer, pol *policy.Policy) er
 // Query runs canonical read-only SQL inside a READ ONLY transaction that is
 // always rolled back.
 func (b *Backend) Query(ctx context.Context, canonicalSQL string, maxRows int) (*db.Result, error) {
+	if b.replicaSlots != nil {
+		select {
+		case b.replicaSlots <- struct{}{}:
+			defer func() { <-b.replicaSlots }()
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	start := time.Now()
 	maxRows = b.capRows(maxRows)
 	log := b.log.With("sql", truncate(canonicalSQL), "max_rows", maxRows)
@@ -304,10 +349,21 @@ func (b *Backend) Query(ctx context.Context, canonicalSQL string, maxRows int) (
 		log.Debug("query.failed", "error", err.Error(), "duration", time.Since(start))
 		return nil, err
 	}
-	res, err := collectRows(rows, conn.Conn().TypeMap(), maxRows)
+	maxBytes := 0
+	if b.replicaCheck != nil {
+		maxBytes = 256 << 10
+	}
+	res, err := collectRowsBounded(rows, conn.Conn().TypeMap(), maxRows, maxBytes)
 	if err != nil {
 		log.Debug("query.failed", "error", err.Error(), "duration", time.Since(start))
 		return nil, err
+	}
+	if b.replicaCheck != nil {
+		// Hot-standby sessions can survive promotion. Suppress results if
+		// recovery ended while this query was in progress.
+		if err := b.replicaCheck(ctx, conn.Conn()); err != nil {
+			return nil, err
+		}
 	}
 	res.Duration = time.Since(start)
 	log.Debug("query.done", "rows", len(res.Rows), "truncated", res.Truncated, "duration", res.Duration)
@@ -409,6 +465,10 @@ func isUndefinedFunction(err error, name string) bool {
 // Truncated when more were available. It always closes rows so the command
 // tag is complete.
 func collectRows(rows pgx.Rows, tm *pgtype.Map, maxRows int) (*db.Result, error) {
+	return collectRowsBounded(rows, tm, maxRows, 0)
+}
+
+func collectRowsBounded(rows pgx.Rows, tm *pgtype.Map, maxRows, maxBytes int) (*db.Result, error) {
 	defer rows.Close()
 	res := &db.Result{Rows: [][]any{}}
 	fds := rows.FieldDescriptions()
@@ -425,6 +485,16 @@ func collectRows(rows pgx.Rows, tm *pgtype.Map, maxRows int) (*db.Result, error)
 			res.Truncated = true
 			break
 		}
+		if maxBytes > 0 {
+			size := 0
+			for _, value := range rows.RawValues() {
+				size += len(value)
+			}
+			if size >= maxBytes {
+				res.Truncated = true
+				break
+			}
+		}
 		vals, err := rows.Values()
 		if err != nil {
 			return nil, err
@@ -440,6 +510,17 @@ func collectRows(rows pgx.Rows, tm *pgtype.Map, maxRows int) (*db.Result, error)
 				}
 			}
 			row[i] = convertValue(v)
+		}
+		if maxBytes > 0 {
+			encoded, err := json.Marshal(row)
+			if err != nil {
+				return nil, err
+			}
+			if len(encoded)+1 >= maxBytes {
+				res.Truncated = true
+				break
+			}
+			maxBytes -= len(encoded) + 1
 		}
 		res.Rows = append(res.Rows, row)
 	}
