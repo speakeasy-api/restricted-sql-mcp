@@ -28,6 +28,8 @@ func TestGrantsOnPrimaryAndReplica(t *testing.T) {
 
 	_, err = admin.Exec(ctx, `
 CREATE ROLE "example_reader" LOGIN PASSWORD 'pilot-password';
+COMMENT ON ROLE example_reader IS 'restricted-sql-mcp:reader';
+CREATE ROLE existing_unmarked_login LOGIN;
 CREATE ROLE restricted_sql_verify LOGIN PASSWORD 'verify-password';
 CREATE ROLE restricted_sql_grants LOGIN PASSWORD 'grant-password';
 CREATE SCHEMA replica_test;
@@ -45,6 +47,9 @@ GRANT SELECT ON replica_test.records TO restricted_sql_grants WITH GRANT OPTION;
 	readDSN, _ := RewriteDSN(replica, role, "pilot-password")
 	verifyDSN, _ := RewriteDSN(replica, "restricted_sql_verify", "verify-password")
 	pol := &policy.Policy{Dialect: policy.Postgres, AnnotationTiers: map[policy.Tier]bool{"confidential": true}}
+	if _, err := ReconcileReplicaGrants(ctx, grantsDSN, []string{"existing_unmarked_login"}, pol); err == nil || !strings.Contains(err.Error(), "restricted-sql-mcp:reader") {
+		t.Fatalf("reconciliation for an unmarked existing login returned %v", err)
+	}
 	reconcile := func() string {
 		t.Helper()
 		lsn, err := ReconcileReplicaGrants(ctx, grantsDSN, []string{role}, pol)

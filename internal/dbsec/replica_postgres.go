@@ -213,10 +213,12 @@ func (p *ReplicaProbe) checkReplica(ctx context.Context, conn *pgx.Conn, expecte
 func verifyReplicaRole(ctx context.Context, tx pgx.Tx, role string) error {
 	var permitted bool
 	err := tx.QueryRow(ctx, `
-SELECT rolcanlogin AND (rolname <> session_user OR pg_catalog.pg_is_in_recovery())
+SELECT rolcanlogin
+ AND rolname <> session_user
+ AND coalesce(pg_catalog.shobj_description(oid, 'pg_authid') = 'restricted-sql-mcp:reader', false)
 FROM pg_catalog.pg_roles WHERE rolname=$1`, role).Scan(&permitted)
 	if err != nil || !permitted {
-		return fmt.Errorf("replica role %q must be an existing dedicated login", role)
+		return fmt.Errorf("replica role %q must be marked with the restricted-sql-mcp:reader role comment", role)
 	}
 	var excess bool
 	err = tx.QueryRow(ctx, `
