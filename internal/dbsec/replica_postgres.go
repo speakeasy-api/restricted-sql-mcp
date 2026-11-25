@@ -137,6 +137,10 @@ func (p *ReplicaProbe) inspect(ctx context.Context, base *policy.Policy) (*repli
 		}
 		snapshot.roleErrors[role] = err
 	}
+	// An existing hot-standby connection can survive promotion.
+	if err := p.checkReplica(ctx, conn, p.VerifierRole); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
