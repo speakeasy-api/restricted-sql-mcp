@@ -134,13 +134,15 @@ func replicaCallerRouting(verify func(*http.Request) (*tunnelidentity.Claims, er
 		if claims == nil || !strings.HasPrefix(claims.Subject, "user:") || claims.Subject == "user:" {
 			return nil
 		}
-		if server := servers[claims.Subject]; server != nil {
-			return server
+		byUser := servers[claims.Subject]
+		byEmail := servers["email:"+config.NormalizeReplicaEmail(claims.Email)]
+		if byUser != nil && byEmail != nil && byUser != byEmail {
+			return nil
 		}
-		if email := config.NormalizeReplicaEmail(claims.Email); email != "" {
-			return servers["email:"+email]
+		if byUser != nil {
+			return byUser
 		}
-		return nil
+		return byEmail
 	}
 	authenticate := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
