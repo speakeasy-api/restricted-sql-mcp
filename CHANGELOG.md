@@ -1,5 +1,11 @@
 # restricted-sql-mcp
 
+## 0.3.1
+
+### Patch Changes
+
+- 506c6b6: Allow replica access rosters to specify a human caller's email from the signed Gram tunnel assertion. Existing roster entries with a Gram user ID continue to authorize by that ID.
+
 ## 0.3.0
 
 ### Minor Changes
