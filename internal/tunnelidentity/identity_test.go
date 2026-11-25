@@ -17,10 +17,11 @@ func TestAssertionVerification(t *testing.T) {
 		t.Fatal(err)
 	}
 	const kid = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	const issuer = "https://tunnel.speakeasy.com"
 	const audience = "tunneled-mcp-server:staff-pilot"
 	const organization = "staff-org"
 	now := time.Now().Truncate(time.Second)
-	verifier := New(audience, organization)
+	verifier := New(issuer, audience, organization, nil)
 	verifier.keys = map[string]*rsa.PublicKey{kid: &key.PublicKey}
 	verifier.expires = now.Add(5 * time.Minute)
 
@@ -50,7 +51,7 @@ func TestAssertionVerification(t *testing.T) {
 			claims := &Claims{
 				Version: 1, Organization: organization,
 				RegisteredClaims: jwt.RegisteredClaims{
-					Issuer: Issuer, Subject: "user:pilot", Audience: []string{audience},
+					Issuer: issuer, Subject: "user:pilot", Audience: []string{audience},
 					IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(60 * time.Second)), ID: "assertion",
 				},
 			}

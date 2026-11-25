@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/speakeasy-api/restricted-sql-mcp/internal/policy"
@@ -85,62 +86,30 @@ func ReconcileReplicaGrants(ctx context.Context, dsn string, roles []string, bas
 	return lsn, err
 }
 
-// ReplicaAnnotations adapts the existing annotation gate without any
-// provisioner, ownership credentials, or role cleanup.
-type ReplicaAnnotations struct {
-	ReadDSN, Role, ExpectedLSN string
-	VerifierDSN, VerifierRole  string
-	Slots                      chan struct{}
+// ReplicaProbe publishes one immutable catalog and grant snapshot for all
+// configured logins. The caller runs Refresh serially.
+type ReplicaProbe struct {
+	VerifierDSN, VerifierRole, ExpectedLSN string
+	Roles                                  []string
+	latest                                 atomic.Pointer[replicaSnapshot]
 }
 
-func (p *ReplicaAnnotations) Load(ctx context.Context) (*policy.Catalog, error) {
-	return p.inspect(ctx, nil)
+type replicaSnapshot struct {
+	catalog    *policy.Catalog
+	roleErrors map[string]error
+	err        error
 }
 
-func (p *ReplicaAnnotations) Reconcile(ctx context.Context, pol *policy.Policy) (Creds, error) {
-	if err := p.Verify(ctx, pol); err != nil {
-		return Creds{}, err
+func (p *ReplicaProbe) Refresh(ctx context.Context, base *policy.Policy) error {
+	snapshot, err := p.inspect(ctx, base)
+	if err != nil {
+		snapshot = &replicaSnapshot{err: err}
 	}
-	return Creds{ReadDSN: p.ReadDSN}, nil
-}
-
-func (p *ReplicaAnnotations) Verify(ctx context.Context, pol *policy.Policy) error {
-	_, err := p.inspect(ctx, pol)
+	p.latest.Store(snapshot)
 	return err
 }
 
-func (p *ReplicaAnnotations) Close(context.Context) error { return nil }
-
-// CheckReplica requires a physical standby and the configured role and replay floor.
-func (p *ReplicaAnnotations) CheckReplica(ctx context.Context, db interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}) error {
-	return p.checkReplica(ctx, db, p.Role)
-}
-
-func (p *ReplicaAnnotations) checkReplica(ctx context.Context, db interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}, expectedRole string) error {
-	var replica, replayed bool
-	var role string
-	if err := db.QueryRow(ctx, "SELECT pg_catalog.pg_is_in_recovery(), coalesce(pg_catalog.pg_last_wal_replay_lsn() >= $1::pg_lsn, false), session_user", p.ExpectedLSN).Scan(&replica, &replayed, &role); err != nil {
-		return errors.New("could not verify the read replica")
-	}
-	if !replica || !replayed || role != expectedRole {
-		return errors.New("database must be the configured replica, login and replay position")
-	}
-	return nil
-}
-
-func (p *ReplicaAnnotations) inspect(ctx context.Context, pol *policy.Policy) (*policy.Catalog, error) {
-	if p.Slots != nil {
-		select {
-		case p.Slots <- struct{}{}:
-			defer func() { <-p.Slots }()
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
+func (p *ReplicaProbe) inspect(ctx context.Context, base *policy.Policy) (*replicaSnapshot, error) {
 	conn, err := pgx.Connect(ctx, p.VerifierDSN)
 	if err != nil {
 		return nil, errors.New("could not connect to the read replica")
@@ -155,22 +124,86 @@ func (p *ReplicaAnnotations) inspect(ctx context.Context, pol *policy.Policy) (*
 		return nil, err
 	}
 	defer tx.Rollback(context.Background())
-	cat, err := loadPGAnnotations(ctx, tx)
+	catalog, err := loadPGAnnotations(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
-	if pol != nil {
-		if pol.Catalog.Digest != cat.Digest {
-			return nil, errors.New("replica catalog changed during grant verification")
+	pol := base.WithCatalog(catalog)
+	snapshot := &replicaSnapshot{catalog: catalog, roleErrors: make(map[string]error, len(p.Roles))}
+	for _, role := range p.Roles {
+		err := verifyReplicaRole(ctx, tx, role)
+		if err == nil {
+			err = verifyReplicaGrants(ctx, tx, role, pol)
 		}
-		if err := verifyReplicaRole(ctx, tx, p.Role); err != nil {
-			return nil, err
-		}
-		if err := verifyReplicaGrants(ctx, tx, p.Role, pol); err != nil {
-			return nil, err
-		}
+		snapshot.roleErrors[role] = err
 	}
-	return cat, tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return snapshot, nil
+}
+
+// ReplicaAnnotations supplies one login to the annotation gate. It reads the
+// shared probe result and never provisions, changes, or drops database roles.
+type ReplicaAnnotations struct {
+	ReadDSN, Role string
+	Probe         *ReplicaProbe
+}
+
+func (p *ReplicaAnnotations) snapshot() (*policy.Catalog, error) {
+	snapshot := p.Probe.latest.Load()
+	if snapshot == nil {
+		return nil, errors.New("replica grant verification has not completed")
+	}
+	if snapshot.err != nil {
+		return nil, snapshot.err
+	}
+	err, ok := snapshot.roleErrors[p.Role]
+	if !ok {
+		return nil, errors.New("replica login was omitted from grant verification")
+	}
+	return snapshot.catalog, err
+}
+
+func (p *ReplicaAnnotations) Load(context.Context) (*policy.Catalog, error) {
+	return p.snapshot()
+}
+
+func (p *ReplicaAnnotations) Reconcile(ctx context.Context, pol *policy.Policy) (Creds, error) {
+	if err := p.Verify(ctx, pol); err != nil {
+		return Creds{}, err
+	}
+	return Creds{ReadDSN: p.ReadDSN}, nil
+}
+
+func (p *ReplicaAnnotations) Verify(_ context.Context, pol *policy.Policy) error {
+	catalog, err := p.snapshot()
+	if err != nil {
+		return err
+	}
+	if catalog.Digest != pol.Catalog.Digest {
+		return errors.New("replica catalog changed during grant verification")
+	}
+	return nil
+}
+
+func (p *ReplicaAnnotations) Close(context.Context) error { return nil }
+
+// CheckReplica requires a physical standby and the configured role and replay floor.
+func (p *ReplicaAnnotations) CheckReplica(ctx context.Context, conn *pgx.Conn) error {
+	return p.Probe.checkReplica(ctx, conn, p.Role)
+}
+
+func (p *ReplicaProbe) checkReplica(ctx context.Context, conn *pgx.Conn, expectedRole string) error {
+	var replica, replayed bool
+	var role string
+	if err := conn.QueryRow(ctx, "SELECT pg_catalog.pg_is_in_recovery(), coalesce(pg_catalog.pg_last_wal_replay_lsn() >= $1::pg_lsn, false), session_user", p.ExpectedLSN).Scan(&replica, &replayed, &role); err != nil {
+		return errors.New("could not verify the read replica")
+	}
+	if !replica || !replayed || role != expectedRole {
+		return errors.New("database must be the configured replica, login and replay position")
+	}
+	return nil
 }
 
 func verifyReplicaRole(ctx context.Context, tx pgx.Tx, role string) error {

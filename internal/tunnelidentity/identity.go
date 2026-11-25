@@ -16,11 +16,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-const (
-	Issuer  = "https://tunnel.speakeasy.com"
-	Header  = "X-Speakeasy-Identity"
-	jwksURL = Issuer + "/.well-known/jwks.json"
-)
+const Header = "X-Speakeasy-Identity"
 
 var errIdentity = errors.New("invalid tunnel identity assertion")
 
@@ -52,6 +48,8 @@ func (c *Claims) AllowsMethod(method string) bool {
 }
 
 type Verifier struct {
+	issuer       string
+	jwksURL      string
 	audience     string
 	organization string
 	client       *http.Client
@@ -61,12 +59,15 @@ type Verifier struct {
 	lastAttempt  time.Time
 }
 
-func New(audience, organization string) *Verifier {
+func New(issuer, audience, organization string, transport http.RoundTripper) *Verifier {
 	return &Verifier{
+		issuer:       issuer,
+		jwksURL:      issuer + "/.well-known/jwks.json",
 		audience:     audience,
 		organization: organization,
 		client: &http.Client{
 			Timeout:       3 * time.Second,
+			Transport:     transport,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 	}
@@ -84,7 +85,7 @@ func (v *Verifier) Verify(r *http.Request) (*Claims, error) {
 			return nil, errIdentity
 		}
 		return v.key(r.Context(), kid)
-	}, jwt.WithValidMethods([]string{"RS256"}), jwt.WithIssuer(Issuer), jwt.WithAudience(v.audience),
+	}, jwt.WithValidMethods([]string{"RS256"}), jwt.WithIssuer(v.issuer), jwt.WithAudience(v.audience),
 		jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithLeeway(5*time.Second))
 	if err != nil || claims.Version != 1 || claims.Organization != v.organization ||
 		len(claims.Audience) != 1 || claims.IssuedAt == nil || claims.ID == "" {
@@ -109,7 +110,7 @@ func (v *Verifier) key(ctx context.Context, kid string) (*rsa.PublicKey, error) 
 		return nil, errIdentity
 	}
 	v.lastAttempt = now
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jwksURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, v.jwksURL, nil)
 	if err != nil {
 		return nil, errIdentity
 	}

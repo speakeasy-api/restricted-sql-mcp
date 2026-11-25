@@ -56,6 +56,12 @@ func TestReplicaModesUseConfiguredRoster(t *testing.T) {
 		t.Fatalf("subject = %q", got)
 	}
 
+	env["RESTRICTED_SQL_REPLAY_LSN"] = "00000000/00000000"
+	if _, err := parse("serve", "--tunnel", "--tunnel-only"); err == nil {
+		t.Fatal("accepted a padded zero replay floor")
+	}
+	env["RESTRICTED_SQL_REPLAY_LSN"] = "0/A"
+
 	env["RESTRICTED_SQL_ROSTER"] = `[{"gramUserID":"alice","databaseLogin":"reader"},{"gramUserID":"bob","databaseLogin":"reader"}]`
 	if _, err := parse("serve", "--tunnel", "--tunnel-only"); err == nil {
 		t.Fatal("accepted two callers sharing an audit login")

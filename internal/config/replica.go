@@ -62,13 +62,19 @@ func (c *Config) validateReplica() error {
 			return errors.New("reconciliation requires a database password")
 		}
 	case "serve":
+		gateway, err := url.Parse(c.TunnelGatewayURL)
+		if err != nil || gateway.Scheme != "wss" || gateway.Hostname() == "" || gateway.User != nil || gateway.Fragment != "" {
+			return errors.New("replica serving requires a secure tunnel gateway URL")
+		}
+		// The gateway publishes the assertion issuer's keys at its HTTPS origin.
+		c.ReplicaIssuer = "https://" + gateway.Host
 		host, _, err := net.SplitHostPort(c.Listen)
 		if err != nil || host != "127.0.0.1" || c.Transport != "http" || !c.TunnelOnly || u.User != nil {
 			return errors.New("replica serving requires a private loopback tunnel and a credential-free replica URL")
 		}
 		if c.ReplicaPasswords == "" || c.ReplicaAudience == "" || c.ReplicaOrganization == "" ||
 			!validReplicaLogin(c.ReplicaVerifierLogin) || logins[c.ReplicaVerifierLogin] || c.ReplicaVerifierPassword == "" ||
-			!replayLSN.MatchString(c.ReplicaReplayLSN) || c.ReplicaReplayLSN == "0/0" ||
+			!replayLSN.MatchString(c.ReplicaReplayLSN) || strings.Trim(c.ReplicaReplayLSN, "0/") == "" ||
 			c.ReplicaMaxConcurrentQueries <= 0 || strings.EqualFold(c.LogLevel, "debug") {
 			return errors.New("replica serving requires credentials, identity scope, a replay floor, a positive query limit, and log level info or higher")
 		}

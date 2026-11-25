@@ -279,12 +279,6 @@ func (b *Backend) beginReadOnly(ctx context.Context) (*pgxpool.Conn, pgx.Tx, err
 		}
 		return nil, nil, fmt.Errorf("acquire connection: %w", err)
 	}
-	if b.replicaCheck != nil {
-		if err := b.replicaCheck(ctx, conn.Conn()); err != nil {
-			conn.Release()
-			return nil, nil, err
-		}
-	}
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		conn.Release()
@@ -294,6 +288,14 @@ func (b *Backend) beginReadOnly(ctx context.Context) (*pgxpool.Conn, pgx.Tx, err
 		_ = tx.Rollback(ctx)
 		conn.Release()
 		return nil, nil, err
+	}
+	if b.replicaCheck != nil {
+		// The connection is inside the read-only transaction just opened.
+		if err := b.replicaCheck(ctx, conn.Conn()); err != nil {
+			rollbackQuietly(tx)
+			conn.Release()
+			return nil, nil, err
+		}
 	}
 	return conn, tx, nil
 }
@@ -355,6 +357,13 @@ func (b *Backend) Query(ctx context.Context, canonicalSQL string, maxRows int) (
 	if err != nil {
 		log.Debug("query.failed", "error", err.Error(), "duration", time.Since(start))
 		return nil, err
+	}
+	if b.replicaCheck != nil {
+		// Hot-standby sessions can survive promotion. Suppress results if
+		// recovery ended while this query was in progress.
+		if err := b.replicaCheck(ctx, conn.Conn()); err != nil {
+			return nil, err
+		}
 	}
 	res.Duration = time.Since(start)
 	log.Debug("query.done", "rows", len(res.Rows), "truncated", res.Truncated, "duration", res.Duration)

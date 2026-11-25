@@ -22,6 +22,7 @@ type Config struct {
 	ReplicaMode                 string
 	ReplicaPrincipals           []ReplicaPrincipal
 	ReplicaPasswords            string
+	ReplicaIssuer               string
 	ReplicaAudience             string
 	ReplicaOrganization         string
 	ReplicaReplayLSN            string
