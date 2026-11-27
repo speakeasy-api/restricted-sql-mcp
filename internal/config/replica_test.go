@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -61,6 +62,20 @@ func TestReplicaModesUseConfiguredRoster(t *testing.T) {
 		t.Fatal("accepted a padded zero replay floor")
 	}
 	env["RESTRICTED_SQL_REPLAY_LSN"] = "0/A"
+
+	delete(env, "RESTRICTED_SQL_REPLAY_LSN")
+	if _, err := parse("serve", "--tunnel", "--tunnel-only"); err == nil {
+		t.Fatal("accepted serving without a grant revision or legacy replay floor")
+	}
+	env["RESTRICTED_SQL_GRANT_REVISION"] = strings.Repeat("a", 64)
+	if _, err := parse("serve", "--tunnel", "--tunnel-only"); err != nil {
+		t.Fatalf("rejected a grant revision without a replay LSN: %v", err)
+	}
+	env["RESTRICTED_SQL_REPLAY_LSN"] = "0/A"
+	if _, err := parse("serve", "--tunnel", "--tunnel-only"); err == nil {
+		t.Fatal("accepted simultaneous grant revision and replay LSN")
+	}
+	delete(env, "RESTRICTED_SQL_REPLAY_LSN")
 
 	env["RESTRICTED_SQL_ROSTER"] = `[{"email":"one@example.com","databaseLogin":"reader_1"},{"email":"ONE@EXAMPLE.COM","databaseLogin":"reader_2"}]`
 	if _, err := parse("serve", "--tunnel", "--tunnel-only"); err == nil {

@@ -43,9 +43,13 @@ func runReplica(ctx context.Context, stop context.CancelFunc, cfg *config.Config
 		logins = append(logins, principal.DatabaseLogin)
 	}
 	if cfg.ReplicaMode == "reconcile" {
-		lsn, err := dbsec.ReconcileReplicaGrants(ctx, cfg.DSN, logins, pol)
+		lsn, err := dbsec.ReconcileReplicaGrants(ctx, cfg.DSN, logins, pol, cfg.ReplicaGrantRevision)
 		if err == nil {
-			logger.Info("replica grants committed", "replay_lsn", lsn)
+			if cfg.ReplicaGrantRevision != "" {
+				logger.Info("replica grants committed", "grant_revision", cfg.ReplicaGrantRevision)
+			} else {
+				logger.Info("replica grants committed", "replay_lsn", lsn)
+			}
 		}
 		return err
 	}
@@ -64,7 +68,7 @@ func runReplica(ctx context.Context, stop context.CancelFunc, cfg *config.Config
 	dataSlots := make(chan struct{}, cfg.ReplicaMaxConcurrentQueries)
 	probe := &dbsec.ReplicaProbe{
 		VerifierDSN: verifyDSN, VerifierRole: cfg.ReplicaVerifierLogin,
-		ExpectedLSN: cfg.ReplicaReplayLSN, Roles: logins,
+		ExpectedLSN: cfg.ReplicaReplayLSN, ExpectedRevision: cfg.ReplicaGrantRevision, Roles: logins,
 	}
 	for _, principal := range cfg.ReplicaPrincipals {
 		dsn, err := dbsec.RewriteDSN(cfg.DSN, principal.DatabaseLogin, passwords[principal.DatabaseLogin])

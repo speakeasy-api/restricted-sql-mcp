@@ -40,6 +40,8 @@ func (p ReplicaPrincipal) validIdentity() bool {
 	return err == nil && address.Address == email
 }
 
+var grantRevision = regexp.MustCompile(`^[a-f0-9]{64}$`)
+
 var replayLSN = regexp.MustCompile(`^[0-9A-Fa-f]{1,8}/[0-9A-Fa-f]{1,8}$`)
 
 func validReplicaLogin(role string) bool {
@@ -69,6 +71,9 @@ func (c *Config) validateReplica() error {
 		u.RawQuery != "sslmode=disable" || c.DefaultDatabase() == "" {
 		return errors.New("replica mode requires a database URL through the local Postgres proxy")
 	}
+	if c.ReplicaGrantRevision != "" && (!grantRevision.MatchString(c.ReplicaGrantRevision) || c.ReplicaReplayLSN != "") {
+		return errors.New("set a SHA-256 grant revision without a replay LSN")
+	}
 	switch c.ReplicaMode {
 	case "reconcile":
 		if c.Tunnel || c.TunnelOnly || c.ReplicaPasswords != "" || c.ReplicaVerifierPassword != "" {
@@ -93,9 +98,11 @@ func (c *Config) validateReplica() error {
 		}
 		if c.ReplicaPasswords == "" || c.ReplicaAudience == "" || c.ReplicaOrganization == "" ||
 			!validReplicaLogin(c.ReplicaVerifierLogin) || logins[c.ReplicaVerifierLogin] || c.ReplicaVerifierPassword == "" ||
-			!replayLSN.MatchString(c.ReplicaReplayLSN) || strings.Trim(c.ReplicaReplayLSN, "0/") == "" ||
 			c.ReplicaMaxConcurrentQueries <= 0 || strings.EqualFold(c.LogLevel, "debug") {
-			return errors.New("replica serving requires credentials, identity scope, a replay floor, a positive query limit, and log level info or higher")
+			return errors.New("replica serving requires credentials, identity scope, a positive query limit, and log level info or higher")
+		}
+		if c.ReplicaGrantRevision == "" && (!replayLSN.MatchString(c.ReplicaReplayLSN) || strings.Trim(c.ReplicaReplayLSN, "0/") == "") {
+			return errors.New("replica serving requires a grant revision or a legacy replay LSN")
 		}
 	default:
 		return errors.New("--replica-mode must be reconcile or serve")
