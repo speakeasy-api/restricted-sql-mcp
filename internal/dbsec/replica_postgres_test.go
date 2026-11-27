@@ -131,18 +131,39 @@ GRANT SELECT (singleton), UPDATE (revision) ON restricted_sql_mcp_state.grant_re
 		t.Fatalf("reconciliation on standby returned %v", err)
 	}
 
-	secondRevision := strings.Repeat("b", 64)
-	probe.ExpectedRevision = secondRevision
-	if err := probe.Refresh(ctx, pol); err == nil {
-		t.Fatal("replica accepted the old revision despite matching catalog and ACLs")
+	replicaAdmin, err := pgx.Connect(ctx, replica)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := source.Load(ctx); err == nil {
-		t.Fatal("published the last good snapshot after a revision mismatch")
+	defer closePG(replicaAdmin)
+	if _, err := replicaAdmin.Exec(ctx, "SELECT pg_catalog.pg_wal_replay_pause()"); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var state string
+		if err := replicaAdmin.QueryRow(ctx, "SELECT pg_catalog.pg_get_wal_replay_pause_state()").Scan(&state); err != nil {
+			t.Fatal(err)
+		}
+		if state == "paused" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	if _, err := admin.Exec(ctx, "COMMENT ON COLUMN replica_test.records.allowed IS '@access: restricted'"); err != nil {
 		t.Fatal(err)
 	}
+	secondRevision := strings.Repeat("b", 64)
 	reconcile(secondRevision)
+	probe.ExpectedRevision = secondRevision
+	if err := probe.Refresh(ctx, pol); err == nil {
+		t.Fatal("lagging replica accepted the old revision despite matching catalog and ACLs")
+	}
+	if _, err := source.Load(ctx); err == nil {
+		t.Fatal("published the last good snapshot after a revision mismatch")
+	}
+	if _, err := replicaAdmin.Exec(ctx, "SELECT pg_catalog.pg_wal_replay_resume()"); err != nil {
+		t.Fatal(err)
+	}
 	catalog = awaitCatalog(source)
 	if err := source.Verify(ctx, pol.WithCatalog(catalog)); err != nil {
 		t.Fatal(err)

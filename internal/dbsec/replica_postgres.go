@@ -99,9 +99,12 @@ func ReconcileReplicaGrants(ctx context.Context, dsn string, roles []string, bas
 // ReplicaProbe publishes one immutable catalog and grant snapshot for all
 // configured logins. The caller runs Refresh serially.
 type ReplicaProbe struct {
-	VerifierDSN, VerifierRole, ExpectedLSN, ExpectedRevision string
-	Roles                                                    []string
-	latest                                                   atomic.Pointer[replicaSnapshot]
+	VerifierDSN      string
+	VerifierRole     string
+	ExpectedLSN      string
+	ExpectedRevision string
+	Roles            []string
+	latest           atomic.Pointer[replicaSnapshot]
 }
 
 type replicaSnapshot struct {
@@ -137,7 +140,10 @@ func (p *ReplicaProbe) inspect(ctx context.Context, base *policy.Policy) (*repli
 	if p.ExpectedRevision != "" {
 		var revision string
 		err := tx.QueryRow(ctx, "SELECT revision FROM restricted_sql_mcp_state.grant_revision WHERE singleton").Scan(&revision)
-		if err != nil || revision != p.ExpectedRevision {
+		if err != nil {
+			return nil, fmt.Errorf("read replica grant revision: %w", err)
+		}
+		if revision != p.ExpectedRevision {
 			return nil, errors.New("replica has not replayed the configured grant revision")
 		}
 	}
