@@ -38,14 +38,6 @@ INSERT INTO replica_test.records VALUES ('a', 'b');
 COMMENT ON COLUMN replica_test.records.allowed IS '@access: confidential';
 GRANT USAGE ON SCHEMA replica_test TO restricted_sql_grants WITH GRANT OPTION;
 GRANT SELECT ON replica_test.records TO restricted_sql_grants WITH GRANT OPTION;
-CREATE SCHEMA restricted_sql_mcp_state;
-CREATE TABLE restricted_sql_mcp_state.grant_revision (
-	singleton boolean PRIMARY KEY CHECK (singleton), revision text NOT NULL
-);
-INSERT INTO restricted_sql_mcp_state.grant_revision VALUES (true, '');
-GRANT USAGE ON SCHEMA restricted_sql_mcp_state TO restricted_sql_grants, restricted_sql_verify;
-GRANT SELECT ON restricted_sql_mcp_state.grant_revision TO restricted_sql_verify;
-GRANT SELECT (singleton), UPDATE (revision) ON restricted_sql_mcp_state.grant_revision TO restricted_sql_grants;
 `)
 	if err != nil {
 		t.Fatal(err)
@@ -55,40 +47,38 @@ GRANT SELECT (singleton), UPDATE (revision) ON restricted_sql_mcp_state.grant_re
 	readDSN, _ := RewriteDSN(replica, role, "pilot-password")
 	verifyDSN, _ := RewriteDSN(replica, "restricted_sql_verify", "verify-password")
 	pol := &policy.Policy{Dialect: policy.Postgres, AnnotationTiers: map[policy.Tier]bool{"confidential": true}}
-	if _, err := ReconcileReplicaGrants(ctx, grantsDSN, []string{"existing_unmarked_login"}, pol, strings.Repeat("a", 64)); err == nil || !strings.Contains(err.Error(), "restricted-sql-mcp:reader") {
+	if err := ReconcileReplicaGrants(ctx, grantsDSN, []string{"existing_unmarked_login"}, pol); err == nil || !strings.Contains(err.Error(), "restricted-sql-mcp:reader") {
 		t.Fatalf("reconciliation for an unmarked existing login returned %v", err)
 	}
-	reconcile := func(revision string) string {
+	reconcile := func() {
 		t.Helper()
-		lsn, err := ReconcileReplicaGrants(ctx, grantsDSN, []string{role}, pol, revision)
+		err := ReconcileReplicaGrants(ctx, grantsDSN, []string{role}, pol)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return lsn
 	}
-	lsn := reconcile("")
-	firstRevision := strings.Repeat("a", 64)
-	reconcile(firstRevision)
-	reconcile(firstRevision)
+	reconcile()
+	reconcile()
 	probe := &ReplicaProbe{
-		Roles: []string{role, "missing_reader"}, ExpectedRevision: firstRevision,
+		Roles:       []string{role, "missing_reader"},
 		VerifierDSN: verifyDSN, VerifierRole: "restricted_sql_verify",
 	}
 	source := ReplicaAnnotations{ReadDSN: readDSN, Role: role, Probe: probe}
-	awaitCatalog := func(source ReplicaAnnotations) *policy.Catalog {
+	records := policy.TableRef{Schema: "replica_test", Name: "records"}
+	awaitCatalog := func(readable bool) *policy.Catalog {
 		t.Helper()
 		for ctx.Err() == nil {
 			if err := source.Probe.Refresh(ctx, pol); err == nil {
-				if catalog, err := source.Load(ctx); err == nil {
+				if catalog, err := source.Load(ctx); err == nil && pol.WithCatalog(catalog).CanReadColumn(records, "allowed") == readable {
 					return catalog
 				}
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
-		t.Fatal("standby did not reach the configured grant revision")
+		t.Fatal("standby catalog and grants did not converge")
 		return nil
 	}
-	catalog := awaitCatalog(source)
+	catalog := awaitCatalog(true)
 	missing := ReplicaAnnotations{Role: "missing_reader", Probe: probe}
 	if _, err := missing.Load(ctx); err == nil {
 		t.Fatal("published a policy for a missing login")
@@ -114,57 +104,20 @@ GRANT SELECT (singleton), UPDATE (revision) ON restricted_sql_mcp_state.grant_re
 	}
 
 	primaryVerifyDSN, _ := RewriteDSN(primary, probe.VerifierRole, "verify-password")
-	wrongEndpoint := &ReplicaProbe{VerifierDSN: primaryVerifyDSN, VerifierRole: probe.VerifierRole, ExpectedRevision: firstRevision}
+	wrongEndpoint := &ReplicaProbe{VerifierDSN: primaryVerifyDSN, VerifierRole: probe.VerifierRole}
 	if err := wrongEndpoint.Refresh(ctx, pol); err == nil {
 		t.Fatal("serving verifier accepted the primary")
 	}
-	legacy := &ReplicaProbe{VerifierDSN: verifyDSN, VerifierRole: probe.VerifierRole, ExpectedLSN: lsn}
-	if err := legacy.Refresh(ctx, pol); err != nil {
-		t.Fatalf("legacy replay floor was rejected: %v", err)
-	}
-	stale := &ReplicaProbe{VerifierDSN: verifyDSN, VerifierRole: probe.VerifierRole, ExpectedLSN: "FFFFFFFF/FFFFFFFF"}
-	if err := stale.Refresh(ctx, pol); err == nil {
-		t.Fatal("serving verifier accepted stale WAL replay")
-	}
 	standbyGrants, _ := RewriteDSN(replica, "restricted_sql_grants", "grant-password")
-	if _, err := ReconcileReplicaGrants(ctx, standbyGrants, []string{role}, pol, firstRevision); err == nil || !strings.Contains(err.Error(), "requires the primary") {
+	if err := ReconcileReplicaGrants(ctx, standbyGrants, []string{role}, pol); err == nil || !strings.Contains(err.Error(), "requires the primary") {
 		t.Fatalf("reconciliation on standby returned %v", err)
 	}
 
-	replicaAdmin, err := pgx.Connect(ctx, replica)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closePG(replicaAdmin)
-	if _, err := replicaAdmin.Exec(ctx, "SELECT pg_catalog.pg_wal_replay_pause()"); err != nil {
-		t.Fatal(err)
-	}
-	for {
-		var state string
-		if err := replicaAdmin.QueryRow(ctx, "SELECT pg_catalog.pg_get_wal_replay_pause_state()").Scan(&state); err != nil {
-			t.Fatal(err)
-		}
-		if state == "paused" {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
 	if _, err := admin.Exec(ctx, "COMMENT ON COLUMN replica_test.records.allowed IS '@access: restricted'"); err != nil {
 		t.Fatal(err)
 	}
-	secondRevision := strings.Repeat("b", 64)
-	reconcile(secondRevision)
-	probe.ExpectedRevision = secondRevision
-	if err := probe.Refresh(ctx, pol); err == nil {
-		t.Fatal("lagging replica accepted the old revision despite matching catalog and ACLs")
-	}
-	if _, err := source.Load(ctx); err == nil {
-		t.Fatal("published the last good snapshot after a revision mismatch")
-	}
-	if _, err := replicaAdmin.Exec(ctx, "SELECT pg_catalog.pg_wal_replay_resume()"); err != nil {
-		t.Fatal(err)
-	}
-	catalog = awaitCatalog(source)
+	reconcile()
+	catalog = awaitCatalog(false)
 	if err := source.Verify(ctx, pol.WithCatalog(catalog)); err != nil {
 		t.Fatal(err)
 	}

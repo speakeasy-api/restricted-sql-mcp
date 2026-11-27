@@ -11,51 +11,50 @@ import (
 )
 
 // ReconcileReplicaGrants applies the configured annotation policy to existing, dedicated
-// logins. Role creation and credentials are managed separately. The returned
-// WAL position is only used by deployments without a grant revision.
-func ReconcileReplicaGrants(ctx context.Context, dsn string, roles []string, base *policy.Policy, revision string) (string, error) {
+// logins. Role creation and credentials are managed separately.
+func ReconcileReplicaGrants(ctx context.Context, dsn string, roles []string, base *policy.Policy) error {
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
-		return "", errors.New("could not connect to the grant database")
+		return errors.New("could not connect to the grant database")
 	}
 	defer closePG(conn)
 	var replica, locked bool
 	if err := conn.QueryRow(ctx, "SELECT pg_catalog.pg_is_in_recovery()").Scan(&replica); err != nil {
-		return "", err
+		return err
 	}
 	if replica {
-		return "", errors.New("grant reconciliation requires the primary")
+		return errors.New("grant reconciliation requires the primary")
 	}
 	if err := conn.QueryRow(ctx, "SELECT pg_catalog.pg_try_advisory_lock(197321181, 5178021)").Scan(&locked); err != nil {
-		return "", err
+		return err
 	}
 	if !locked {
-		return "", errors.New("another replica grant reconciliation is running")
+		return errors.New("another replica grant reconciliation is running")
 	}
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer tx.Rollback(context.Background())
 	if _, err := tx.Exec(ctx, "SET LOCAL search_path = pg_catalog"); err != nil {
-		return "", err
+		return err
 	}
 	if _, err := tx.Exec(ctx, "SET LOCAL synchronous_commit = on"); err != nil {
-		return "", err
+		return err
 	}
 	catalog, err := loadPGAnnotations(ctx, tx)
 	if err != nil {
-		return "", err
+		return err
 	}
 	pol := base.WithCatalog(catalog)
 	for _, role := range roles {
 		if err := verifyReplicaRole(ctx, tx, role); err != nil {
-			return "", err
+			return err
 		}
 		// PostgreSQL also revokes the matching column ACLs on a table REVOKE.
 		stmts, err := heldPrivilegeRevokes(ctx, tx, role)
 		if err != nil {
-			return "", err
+			return err
 		}
 		ident := pgx.Identifier{role}.Sanitize()
 		schemas := map[string]bool{}
@@ -72,39 +71,21 @@ func ReconcileReplicaGrants(ctx context.Context, dsn string, roles []string, bas
 			stmts = append(stmts, plain("GRANT SELECT ("+columnIdents(cols, quote)+") ON "+refIdent(ref)+" TO "+ident))
 		}
 		if err := runStatements(ctx, tx, stmts); err != nil {
-			return "", err
+			return err
 		}
 		if err := verifyReplicaGrants(ctx, tx, role, pol); err != nil {
-			return "", err
+			return err
 		}
 	}
-	if revision != "" {
-		// The marker and the grants must become visible in the same commit.
-		tag, err := tx.Exec(ctx, "UPDATE restricted_sql_mcp_state.grant_revision SET revision = $1 WHERE singleton", revision)
-		if err != nil {
-			return "", fmt.Errorf("record grant revision: %w", err)
-		}
-		if tag.RowsAffected() != 1 {
-			return "", errors.New("grant revision marker is missing")
-		}
-	}
-	if err := tx.Commit(ctx); err != nil || revision != "" {
-		return "", err
-	}
-	var lsn string
-	err = conn.QueryRow(ctx, "SELECT pg_catalog.pg_current_wal_flush_lsn()::text").Scan(&lsn)
-	return lsn, err
+	return tx.Commit(ctx)
 }
 
 // ReplicaProbe publishes one immutable catalog and grant snapshot for all
 // configured logins. The caller runs Refresh serially.
 type ReplicaProbe struct {
-	VerifierDSN      string
-	VerifierRole     string
-	ExpectedLSN      string
-	ExpectedRevision string
-	Roles            []string
-	latest           atomic.Pointer[replicaSnapshot]
+	VerifierDSN, VerifierRole string
+	Roles                     []string
+	latest                    atomic.Pointer[replicaSnapshot]
 }
 
 type replicaSnapshot struct {
@@ -128,7 +109,6 @@ func (p *ReplicaProbe) inspect(ctx context.Context, base *policy.Policy) (*repli
 		return nil, errors.New("could not connect to the read replica")
 	}
 	defer closePG(conn)
-	// Observe the legacy replay floor before establishing the catalog snapshot.
 	if err := p.checkReplica(ctx, conn, p.VerifierRole); err != nil {
 		return nil, err
 	}
@@ -137,16 +117,6 @@ func (p *ReplicaProbe) inspect(ctx context.Context, base *policy.Policy) (*repli
 		return nil, err
 	}
 	defer tx.Rollback(context.Background())
-	if p.ExpectedRevision != "" {
-		var revision string
-		err := tx.QueryRow(ctx, "SELECT revision FROM restricted_sql_mcp_state.grant_revision WHERE singleton").Scan(&revision)
-		if err != nil {
-			return nil, fmt.Errorf("read replica grant revision: %w", err)
-		}
-		if revision != p.ExpectedRevision {
-			return nil, errors.New("replica has not replayed the configured grant revision")
-		}
-	}
 	catalog, err := loadPGAnnotations(ctx, tx)
 	if err != nil {
 		return nil, err
@@ -222,20 +192,13 @@ func (p *ReplicaAnnotations) CheckReplica(ctx context.Context, conn *pgx.Conn) e
 }
 
 func (p *ReplicaProbe) checkReplica(ctx context.Context, conn *pgx.Conn, expectedRole string) error {
-	floor := p.ExpectedLSN
-	if p.ExpectedRevision != "" {
-		// The verifier checks freshness with the grant marker. Here the zero
-		// floor requires replay to have started and preserves the audited probe
-		// text used to suppress routine health checks in SIEM.
-		floor = "0/0"
-	}
-	var replica, replayed bool
+	var replica bool
 	var role string
-	if err := conn.QueryRow(ctx, "SELECT pg_catalog.pg_is_in_recovery(), coalesce(pg_catalog.pg_last_wal_replay_lsn() >= $1::pg_lsn, false), session_user", floor).Scan(&replica, &replayed, &role); err != nil {
+	if err := conn.QueryRow(ctx, "SELECT pg_catalog.pg_is_in_recovery(), session_user /* restricted-sql-mcp probe */").Scan(&replica, &role); err != nil {
 		return errors.New("could not verify the read replica")
 	}
-	if !replica || !replayed || role != expectedRole {
-		return errors.New("database must be the configured replica, login and replay position")
+	if !replica || role != expectedRole {
+		return errors.New("database must be the configured replica and login")
 	}
 	return nil
 }
