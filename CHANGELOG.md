@@ -1,5 +1,11 @@
 # restricted-sql-mcp
 
+## 0.3.2
+
+### Patch Changes
+
+- b8cc9f2: Remove the configurable WAL replay floor. Restricted SQL continues to require a physical standby and verify the live replica catalog and reader grants.
+
 ## 0.3.1
 
 ### Patch Changes
