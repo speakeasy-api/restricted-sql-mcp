@@ -25,7 +25,6 @@ type Config struct {
 	ReplicaIssuer               string
 	ReplicaAudience             string
 	ReplicaOrganization         string
-	ReplicaReplayLSN            string
 	ReplicaVerifierPassword     string
 	ReplicaVerifierLogin        string
 	ReplicaMaxConcurrentQueries int
@@ -153,7 +152,6 @@ func ParseFlags(args []string, getenv func(string) string, version string) (*Con
 	c.ReplicaVerifierLogin = getenv("RESTRICTED_SQL_VERIFIER_LOGIN")
 	c.ReplicaAudience = getenv("RESTRICTED_SQL_AUDIENCE")
 	c.ReplicaOrganization = getenv("RESTRICTED_SQL_ORGANIZATION")
-	c.ReplicaReplayLSN = getenv("RESTRICTED_SQL_REPLAY_LSN")
 	c.ReplicaVerifierPassword = getenv("RESTRICTED_SQL_VERIFIER_PASSWORD")
 	c.TunnelGatewayURL = getenv("TUNNEL_GATEWAY_URL")
 	c.TunnelKey = getenv("TUNNEL_KEY")

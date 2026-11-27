@@ -5,7 +5,6 @@ import (
 	"net"
 	"net/mail"
 	"net/url"
-	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -39,8 +38,6 @@ func (p ReplicaPrincipal) validIdentity() bool {
 	address, err := mail.ParseAddress(email)
 	return err == nil && address.Address == email
 }
-
-var replayLSN = regexp.MustCompile(`^[0-9A-Fa-f]{1,8}/[0-9A-Fa-f]{1,8}$`)
 
 func validReplicaLogin(role string) bool {
 	return role != "" && len(role) <= 63 && utf8.ValidString(role) &&
@@ -93,9 +90,8 @@ func (c *Config) validateReplica() error {
 		}
 		if c.ReplicaPasswords == "" || c.ReplicaAudience == "" || c.ReplicaOrganization == "" ||
 			!validReplicaLogin(c.ReplicaVerifierLogin) || logins[c.ReplicaVerifierLogin] || c.ReplicaVerifierPassword == "" ||
-			!replayLSN.MatchString(c.ReplicaReplayLSN) || strings.Trim(c.ReplicaReplayLSN, "0/") == "" ||
 			c.ReplicaMaxConcurrentQueries <= 0 || strings.EqualFold(c.LogLevel, "debug") {
-			return errors.New("replica serving requires credentials, identity scope, a replay floor, a positive query limit, and log level info or higher")
+			return errors.New("replica serving requires credentials, identity scope, a positive query limit, and log level info or higher")
 		}
 	default:
 		return errors.New("--replica-mode must be reconcile or serve")

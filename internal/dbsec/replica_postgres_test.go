@@ -47,38 +47,38 @@ GRANT SELECT ON replica_test.records TO restricted_sql_grants WITH GRANT OPTION;
 	readDSN, _ := RewriteDSN(replica, role, "pilot-password")
 	verifyDSN, _ := RewriteDSN(replica, "restricted_sql_verify", "verify-password")
 	pol := &policy.Policy{Dialect: policy.Postgres, AnnotationTiers: map[policy.Tier]bool{"confidential": true}}
-	if _, err := ReconcileReplicaGrants(ctx, grantsDSN, []string{"existing_unmarked_login"}, pol); err == nil || !strings.Contains(err.Error(), "restricted-sql-mcp:reader") {
+	if err := ReconcileReplicaGrants(ctx, grantsDSN, []string{"existing_unmarked_login"}, pol); err == nil || !strings.Contains(err.Error(), "restricted-sql-mcp:reader") {
 		t.Fatalf("reconciliation for an unmarked existing login returned %v", err)
 	}
-	reconcile := func() string {
+	reconcile := func() {
 		t.Helper()
-		lsn, err := ReconcileReplicaGrants(ctx, grantsDSN, []string{role}, pol)
+		err := ReconcileReplicaGrants(ctx, grantsDSN, []string{role}, pol)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return lsn
 	}
 	reconcile()
-	lsn := reconcile()
+	reconcile()
 	probe := &ReplicaProbe{
-		Roles: []string{role, "missing_reader"}, ExpectedLSN: lsn,
+		Roles:       []string{role, "missing_reader"},
 		VerifierDSN: verifyDSN, VerifierRole: "restricted_sql_verify",
 	}
 	source := ReplicaAnnotations{ReadDSN: readDSN, Role: role, Probe: probe}
-	awaitCatalog := func(source ReplicaAnnotations) *policy.Catalog {
+	records := policy.TableRef{Schema: "replica_test", Name: "records"}
+	awaitCatalog := func(readable bool) *policy.Catalog {
 		t.Helper()
 		for ctx.Err() == nil {
 			if err := source.Probe.Refresh(ctx, pol); err == nil {
-				if catalog, err := source.Load(ctx); err == nil {
+				if catalog, err := source.Load(ctx); err == nil && pol.WithCatalog(catalog).CanReadColumn(records, "allowed") == readable {
 					return catalog
 				}
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
-		t.Fatal("standby did not reach the replay floor")
+		t.Fatal("standby catalog and grants did not converge")
 		return nil
 	}
-	catalog := awaitCatalog(source)
+	catalog := awaitCatalog(true)
 	missing := ReplicaAnnotations{Role: "missing_reader", Probe: probe}
 	if _, err := missing.Load(ctx); err == nil {
 		t.Fatal("published a policy for a missing login")
@@ -104,24 +104,20 @@ GRANT SELECT ON replica_test.records TO restricted_sql_grants WITH GRANT OPTION;
 	}
 
 	primaryVerifyDSN, _ := RewriteDSN(primary, probe.VerifierRole, "verify-password")
-	wrongEndpoint := &ReplicaProbe{VerifierDSN: primaryVerifyDSN, VerifierRole: probe.VerifierRole, ExpectedLSN: lsn}
+	wrongEndpoint := &ReplicaProbe{VerifierDSN: primaryVerifyDSN, VerifierRole: probe.VerifierRole}
 	if err := wrongEndpoint.Refresh(ctx, pol); err == nil {
 		t.Fatal("serving verifier accepted the primary")
 	}
-	stale := &ReplicaProbe{VerifierDSN: verifyDSN, VerifierRole: probe.VerifierRole, ExpectedLSN: "FFFFFFFF/FFFFFFFF"}
-	if err := stale.Refresh(ctx, pol); err == nil {
-		t.Fatal("serving verifier accepted stale WAL replay")
-	}
 	standbyGrants, _ := RewriteDSN(replica, "restricted_sql_grants", "grant-password")
-	if _, err := ReconcileReplicaGrants(ctx, standbyGrants, []string{role}, pol); err == nil || !strings.Contains(err.Error(), "requires the primary") {
+	if err := ReconcileReplicaGrants(ctx, standbyGrants, []string{role}, pol); err == nil || !strings.Contains(err.Error(), "requires the primary") {
 		t.Fatalf("reconciliation on standby returned %v", err)
 	}
 
 	if _, err := admin.Exec(ctx, "COMMENT ON COLUMN replica_test.records.allowed IS '@access: restricted'"); err != nil {
 		t.Fatal(err)
 	}
-	probe.ExpectedLSN = reconcile()
-	catalog = awaitCatalog(source)
+	reconcile()
+	catalog = awaitCatalog(false)
 	if err := source.Verify(ctx, pol.WithCatalog(catalog)); err != nil {
 		t.Fatal(err)
 	}

@@ -35,7 +35,6 @@ func TestReplicaModesUseConfiguredRoster(t *testing.T) {
 	env["RESTRICTED_SQL_PASSWORDS"] = "{}"
 	env["RESTRICTED_SQL_AUDIENCE"] = "test-resource"
 	env["RESTRICTED_SQL_ORGANIZATION"] = "test-org"
-	env["RESTRICTED_SQL_REPLAY_LSN"] = "0/A"
 	env["RESTRICTED_SQL_VERIFIER_LOGIN"] = "verify"
 	env["RESTRICTED_SQL_VERIFIER_PASSWORD"] = "verify-password"
 	env["TUNNEL_GATEWAY_URL"] = "wss://example.test/connect"
@@ -55,12 +54,6 @@ func TestReplicaModesUseConfiguredRoster(t *testing.T) {
 	if got := serve.ReplicaPrincipals[0].RoutingKey(); got != "user:caller.0" {
 		t.Fatalf("subject = %q", got)
 	}
-
-	env["RESTRICTED_SQL_REPLAY_LSN"] = "00000000/00000000"
-	if _, err := parse("serve", "--tunnel", "--tunnel-only"); err == nil {
-		t.Fatal("accepted a padded zero replay floor")
-	}
-	env["RESTRICTED_SQL_REPLAY_LSN"] = "0/A"
 
 	env["RESTRICTED_SQL_ROSTER"] = `[{"email":"one@example.com","databaseLogin":"reader_1"},{"email":"ONE@EXAMPLE.COM","databaseLogin":"reader_2"}]`
 	if _, err := parse("serve", "--tunnel", "--tunnel-only"); err == nil {
